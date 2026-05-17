@@ -21,6 +21,11 @@ jobs:
 
       - run: uv sync --frozen --group dev
 
-      - run: uv run ruff check .
+      - name: Run ruff
+        run: uv run ruff check .
 
-      - run: uv run mypy .
+      - name: Run mypy
+        run: uv run mypy .
+
+      - name: Run pytest
+        run: uv run pytest -v
