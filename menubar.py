@@ -432,7 +432,6 @@ class AppDelegate(NSObject):
 
         if outcome.state == PollState.SUCCESS and outcome.snapshot is not None:
             snapshot = outcome.snapshot
-            self.tracker.sample(float(snapshot.current_percent))
             group_name = GROUP_NAMES[self.tracker.group()]
             claude_session = _quota_row(
                 "Session",
