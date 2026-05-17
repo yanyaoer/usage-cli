@@ -148,6 +148,21 @@ USAG_DEBUG=1 python3 main.py
 - When Claude Code isn't running, the status file isn't updated — but actual usage isn't changing either (until reset time), so the displayed value is still accurate. After reset time passes, it auto-resets to zero.
 - If the status file hasn't been updated for more than 6 hours, the status line notes "status file is N minutes stale, numbers may be out of date."
 
+## Build a .app bundle (optional)
+
+If you want to launch usag by double-clicking instead of opening a terminal, build a native macOS app bundle:
+
+```bash
+./build_app.sh
+```
+
+The output is `dist/usag.app`. Double-click it or run `open dist/usag.app`.
+
+⚠️ Because this app is not signed with an Apple Developer certificate, **macOS Gatekeeper will block the first launch**.
+To open it: find `dist/usag.app` in Finder → right-click → Open → confirm Open. After that, double-clicking works normally.
+
+Each GitHub Release build (push a `v*` tag) automatically builds the app in CI and attaches `usag.app.zip` to the Release page, so users can download it directly from GitHub Releases.
+
 ## Self-check commands
 
 ```bash

@@ -148,6 +148,21 @@ USAG_DEBUG=1 python3 main.py
 - Claude Code 沒在跑時，狀態檔不會更新，但因為實際用量也不會變（除非 reset 時間到），所以顯示值仍然有效；reset 時間過了會自動歸零。
 - 若狀態檔超過 6 小時沒更新，會在狀態訊息標示「狀態檔已 N 分鐘未更新，數字可能過時」。
 
+## 打包成 .app（可選）
+
+想要雙擊就跑、不開終端機，可以打包成 macOS 原生 App：
+
+```bash
+./build_app.sh
+```
+
+產物在 `dist/usag.app`。雙擊或 `open dist/usag.app` 即可。
+
+⚠️ 因為沒有 Apple Developer 簽章，**第一次開啟時 macOS Gatekeeper 會擋**。
+解法：在 Finder 找到 `dist/usag.app` → 右鍵 → 開啟 → 確認開啟。之後就能直接雙擊。
+
+每次發 GitHub Release（push tag `v*` 時），CI 會自動 build 並把 `usag.app.zip` 附加到 Release 頁面，使用者可以直接從 Release 下載。
+
 ## 自我檢查指令
 
 ```bash
