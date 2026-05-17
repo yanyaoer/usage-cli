@@ -152,5 +152,6 @@ USAG_DEBUG=1 python3 main.py
 source .venv/bin/activate
 ruff check .
 mypy .
+pytest -v
 python3 main.py --tui --mock
 ```

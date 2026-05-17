@@ -5,7 +5,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## Unreleased
 
+## 0.1.0 — 2026-05-17
+
+First public release on GitHub.
+
 ### Added
+- pytest test suite under `tests/` covering `pricing`, `history_loader`, and `usage_rate` (44 tests, 89% line coverage).
+- CI runs `pytest -v` after ruff and mypy.
 - GitHub Actions CI runs `ruff check` and `mypy` on push to main and pull requests (macos-latest runner, uv-managed deps).
 - `USAG_DEBUG=1` environment variable enables warning-level logger output for the previously silent OSError sites.
 - Issue templates (bug report, feature request) and pull request template under `.github/`.
@@ -25,7 +31,3 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Removed
 - `blocks.py` — unused dead code.
-
-## 0.1.0 — 2026-05-17
-
-- First public release on GitHub.
