@@ -5,6 +5,20 @@
 All notable changes to usage are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 0.1.8 — 2026-05-18
+
+### UI
+- Popover redesign:
+  - Claude Code / Codex cards now show a branded icon in the header (`claude.webp` / `codex.webp`).
+  - Card surfaces and progress fills switched to gradient (`NSGradient`); accent colours brightened (Claude leans warm orange, Codex leans cyan).
+  - "Refresh now" and "Quit" buttons replaced with a custom `ActionButton` that draws primary / secondary styles (primary uses the accent gradient, secondary uses a translucent bordered fill).
+  - Rate / status / today-cost line wrapped in its own card so the three sections share one visual language.
+  - Spacing, weights, tracking, and muted colours re-tuned for stronger contrast in both Light and Dark Mode.
+
+### Packaging
+- `setup_app.py` declares `claude.webp` / `codex.webp` as py2app `resources` so the `.app` bundle ships the icons.
+- `menubar.py` resolves icon paths via `NSBundle.mainBundle().pathForResource_ofType_`, so both the dev deployment (LaunchAgent runs `main.py` directly) and the `.app` bundle find the assets.
+
 ## 0.1.7 — 2026-05-18
 
 ### Documentation

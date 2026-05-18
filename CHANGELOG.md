@@ -4,6 +4,20 @@
 
 本檔記錄 usage 所有重要變更。格式參考 [Keep a Changelog](https://keepachangelog.com/)。
 
+## 0.1.8 — 2026-05-18
+
+### 介面
+- popover 重新設計：
+  - Claude Code / Codex 卡片左上加上品牌 icon（`claude.webp` / `codex.webp`）。
+  - 卡片底色與進度條改為漸層填色（`NSGradient`），accent 配色調亮（Claude 偏暖橘、Codex 偏青）。
+  - 「立即更新」與「結束」按鈕改為自繪的 `ActionButton`，分主／次樣式（主按鈕走 accent 漸層、次按鈕走半透明邊框）。
+  - 速率 / 狀態 / 今日花費收進獨立的第三張卡片，與上方兩張視覺一致。
+  - 各 spacing、字重、字距與 muted 顏色重新校正一輪，提高深色 / 淺色模式下的對比度。
+
+### 打包
+- `setup_app.py` 把 `claude.webp` / `codex.webp` 加入 py2app `resources`，確保 `.app` bundle 帶得上 icon。
+- `menubar.py` 改用 `NSBundle.mainBundle().pathForResource_ofType_` 解析 icon 路徑，dev 模式（launchagent 直接跑 `main.py`）與 `.app` bundle 兩種佈署都找得到資源檔。
+
 ## 0.1.7 — 2026-05-18
 
 ### 文件
