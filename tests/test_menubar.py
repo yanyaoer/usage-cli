@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from unittest.mock import patch
+
+import pytest
+
+import antigravity_loader
 import menubar
 
 
@@ -88,9 +93,12 @@ def test_empty_state() -> None:
         state.claude_weekly,
         state.codex_session,
         state.codex_weekly,
+        state.antigravity_session,
+        state.antigravity_weekly,
     )
 
     assert all(row.available is False for row in rows)
+    assert state.antigravity_model == "--"
     assert state.show_install_button is False
 
 
@@ -106,3 +114,42 @@ def test_popover_size_has_positive_dimensions() -> None:
 
     assert size.width > 0
     assert size.height > 0
+
+
+def test_antigravity_rows_mock() -> None:
+    delegate = menubar.AppDelegate.alloc().initWithMock_interval_(True, 60)
+
+    session, weekly, model = delegate._antigravity_rows()
+
+    assert session.available is True
+    assert session.percent == 28.0
+    assert weekly.available is True
+    assert weekly.percent == 41.0
+    assert model == "Gemini 3 Pro"
+
+
+def test_antigravity_rows_from_loader(monkeypatch: pytest.MonkeyPatch) -> None:
+    delegate = menubar.AppDelegate.alloc().initWithMock_interval_(False, 60)
+
+    def fake_load() -> antigravity_loader.AntigravitySnapshot:
+        return antigravity_loader.AntigravitySnapshot(
+            used_percent=30,
+            remaining_fraction=0.7,
+            model_id="gemini-3-pro",
+            resets_at=2_000.0,
+            weekly_used_percent=None,
+            weekly_resets_at=None,
+            active_model="Gemini 3 Pro",
+            polled_at=1_000.0,
+        )
+
+    monkeypatch.setattr(antigravity_loader, "load_antigravity", fake_load)
+
+    with patch("menubar.time.time", return_value=1_000.0):
+        session, weekly, model = delegate._antigravity_rows()
+
+    assert session.available is True
+    assert session.percent == 30.0
+    assert weekly.available is False
+    assert weekly.percent_text == "--"
+    assert model == "Gemini 3 Pro"

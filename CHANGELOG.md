@@ -4,6 +4,24 @@
 
 本檔記錄 usage 所有重要變更。格式參考 [Keep a Changelog](https://keepachangelog.com/)。
 
+## [0.4.0] - 2026-05-20
+
+### 新增
+- **預設面板改為 WKWebView + HTML/CSS render**：classic 預設面板改由共用 HTML/CSS 層繪製，為後續 Windows 版本鋪路；macOS 仍透過 `NSPopover` 內嵌 `WKWebView` 呈現。
+- **Antigravity 額度追蹤**：popover 現在顯示 Claude Code / Codex / Antigravity 三張卡；Antigravity 卡含目前用量（Session）與每週上限（Weekly）兩排。
+
+### 變更
+- `antigravity_loader` 依重置視窗自動分流：≤24h 歸為 Session，>24h 歸為 Weekly；Google API 補上週 bucket 時 Weekly 會自動填值。
+- WKWebView 整合加入 JS bridge（refresh / quit / switch）、預先載入與深色 layer，減少開啟時白閃；切換面板時會 teardown 以解除 retain cycle。
+- 新增依賴：`pyobjc-framework-WebKit`、`pyobjc-framework-Quartz`。
+
+### 移除
+- 移除 `panels/classic.py` CoreGraphics 版本，改由 `HTMLPanel` 取代。
+
+### 內部
+- `codex_loader` / `history_loader._as_int` 型別精確化為 `max(0, int(value))`。
+- 改用 Quartz `CGColorCreateGenericRGB` 建立 `CGColorRef`，消除啟動時的 `ObjCPointerWarning`。
+
 ## 0.3.3 — 2026-05-19
 
 ### 新增

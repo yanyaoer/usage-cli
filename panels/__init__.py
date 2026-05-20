@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 from panels.base import Panel
-from panels.classic import ClassicPanel
 from panels.ecg import ECGPanel
 from panels.matrix import MatrixPanel
 from panels.minimal import MinimalPanel
 from panels.sketch import SketchPanel
 from panels.taiwan import TaiwanPanel
+from panels.web_panel import HTMLPanel
 
 PANELS: tuple[Panel, ...] = (
-    ClassicPanel(),
+    HTMLPanel("classic", "預設", "classic.html"),
     TaiwanPanel,
     MatrixPanel(),
     ECGPanel(),

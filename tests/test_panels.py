@@ -46,7 +46,7 @@ def test_registered_panel_display_names() -> None:
 def test_classic_panel_preferred_size() -> None:
     panel = panels.get_panel("classic")
 
-    assert panel.preferred_size() == (364.0, 574.0)
+    assert panel.preferred_size() == (364.0, 812.0)
 
 
 def test_taiwan_panel_preferred_size() -> None:

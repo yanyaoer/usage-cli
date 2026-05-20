@@ -1,0 +1,205 @@
+# mypy: disable-error-code="import-untyped,import-not-found,misc"
+from __future__ import annotations
+
+import base64
+import json
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+import objc
+from AppKit import NSMakeRect, NSView
+from Foundation import NSBundle, NSObject
+from Quartz import CGColorCreateGenericRGB
+
+try:
+    from WebKit import WKUserContentController, WKWebView, WKWebViewConfiguration
+except ModuleNotFoundError:
+    with objc.autorelease_pool():
+        objc.loadBundle(
+            "WebKit",
+            globals(),
+            bundle_path="/System/Library/Frameworks/WebKit.framework",
+        )
+
+from panels.base import resolve_resource
+
+if TYPE_CHECKING:
+    from menubar import PopoverState, QuotaRowState
+
+PANEL_WIDTH = 364.0
+PANEL_HEIGHT = 812.0
+
+
+class UsageScriptBridge(NSObject):
+    delegate = objc.ivar()
+    web_view = objc.ivar()
+
+    def initWithDelegate_webView_(self, delegate: Any, web_view: Any) -> UsageScriptBridge:
+        self = objc.super(UsageScriptBridge, self).init()
+        if self is None:
+            return None
+        self.delegate = delegate
+        self.web_view = web_view
+        return self
+
+    def userContentController_didReceiveScriptMessage_(self, controller: Any, message: Any) -> None:
+        action = str(message.body())
+        if action == "refresh":
+            self.delegate.refreshNow_(None)
+        elif action == "quit":
+            self.delegate.quitApp_(None)
+        elif action == "install":
+            self.delegate.installHook_(None)
+        elif action == "switch":
+            self.delegate.switchPanel_(self.web_view)
+
+
+class WebPanelView(WKWebView):
+    delegate_ref = objc.ivar()
+    bridge = objc.ivar()
+    user_content_controller = objc.ivar()
+    _ready = objc.ivar()
+    _pending = objc.ivar()
+
+    def initWithFrame_configuration_delegate_(
+        self,
+        frame: Any,
+        configuration: Any,
+        delegate: Any,
+    ) -> WebPanelView:
+        self = objc.super(WebPanelView, self).initWithFrame_configuration_(frame, configuration)
+        if self is None:
+            return None
+        self.delegate_ref = delegate
+        self.bridge = None
+        self.user_content_controller = configuration.userContentController()
+        self._ready = False
+        self._pending = None
+        self.setNavigationDelegate_(self)
+        self.setValue_forKey_(False, "drawsBackground")
+        self.setWantsLayer_(True)
+        layer = self.layer()
+        if layer is not None:
+            layer.setBackgroundColor_(
+                CGColorCreateGenericRGB(10 / 255, 15 / 255, 20 / 255, 1.0)
+            )
+        return self
+
+    def webView_didFinishNavigation_(self, web_view: Any, navigation: Any) -> None:
+        self._ready = True
+        if self._pending is not None:
+            payload = self._pending
+            self._pending = None
+            self.injectState_(payload)
+
+    def setBridge_(self, bridge: Any) -> None:
+        self.bridge = bridge
+
+    def injectState_(self, payload: dict[str, object]) -> None:
+        if not self._ready:
+            self._pending = payload
+            return
+        encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        self.evaluateJavaScript_completionHandler_(f"window.usageApplyState({encoded})", None)
+
+    def teardown(self) -> None:
+        controller = self.user_content_controller
+        if controller is not None:
+            controller.removeScriptMessageHandlerForName_("usage")
+        self.setNavigationDelegate_(None)
+        self.bridge = None
+        self.delegate_ref = None
+        self.user_content_controller = None
+
+
+class HTMLPanel:
+    id: str
+    display_name: str
+    html_filename: str
+
+    def __init__(self, panel_id: str, display_name: str, html_filename: str) -> None:
+        self.id = panel_id
+        self.display_name = display_name
+        self.html_filename = html_filename
+
+    def build_view(self, delegate: Any) -> NSView:
+        if WKUserContentController is None or WKWebViewConfiguration is None:
+            raise RuntimeError("pyobjc-framework-WebKit is required to build HTMLPanel")
+        html = _load_panel_html(self.html_filename)
+        configuration = WKWebViewConfiguration.alloc().init()
+        controller = WKUserContentController.alloc().init()
+        configuration.setUserContentController_(controller)
+        web_view = WebPanelView.alloc().initWithFrame_configuration_delegate_(
+            NSMakeRect(0, 0, PANEL_WIDTH, PANEL_HEIGHT),
+            configuration,
+            delegate,
+        )
+        bridge = UsageScriptBridge.alloc().initWithDelegate_webView_(delegate, web_view)
+        web_view.setBridge_(bridge)
+        controller.addScriptMessageHandler_name_(bridge, "usage")
+        web_view.loadHTMLString_baseURL_(html, None)
+        return web_view
+
+    def apply_state(self, view: NSView, state: PopoverState) -> None:
+        view.injectState_(_state_payload(state))
+
+    def preferred_size(self) -> tuple[float, float]:
+        return (PANEL_WIDTH, PANEL_HEIGHT)
+
+
+def _load_panel_html(filename: str) -> str:
+    bundle = NSBundle.mainBundle()
+    html_path: Path | None = None
+    if bundle is not None:
+        stem, _, ext = filename.rpartition(".")
+        bundled = bundle.pathForResource_ofType_inDirectory_(stem, ext, "panels")
+        if bundled:
+            html_path = Path(str(bundled))
+    if html_path is None:
+        html_path = Path(resolve_resource(f"panels/{filename}"))
+    html = html_path.read_text(encoding="utf-8")
+    return (
+        html.replace("{{CLAUDE_ICON}}", _data_uri("claude.webp"))
+        .replace("{{CODEX_ICON}}", _data_uri("codex.webp"))
+        .replace("{{ANTIGRAVITY_ICON}}", _data_uri("Google-Antigravity-Icon-Full-Color.png"))
+    )
+
+
+def _data_uri(asset_name: str) -> str:
+    path = Path(resolve_resource(asset_name))
+    mime = "image/png" if path.suffix.lower() == ".png" else "image/webp"
+    data = base64.b64encode(path.read_bytes()).decode("ascii")
+    return f"data:{mime};base64,{data}"
+
+
+def _row_payload(row: QuotaRowState) -> dict[str, object]:
+    return {
+        "percent": row.percent,
+        "percentText": row.percent_text,
+        "resetText": row.reset_text,
+        "available": row.available,
+    }
+
+
+def _state_payload(state: PopoverState) -> dict[str, object]:
+    return {
+        "claude": {
+            "session": _row_payload(state.claude_session),
+            "weekly": _row_payload(state.claude_weekly),
+        },
+        "codex": {
+            "session": _row_payload(state.codex_session),
+            "weekly": _row_payload(state.codex_weekly),
+        },
+        "antigravity": {
+            "session": _row_payload(state.antigravity_session),
+            "weekly": _row_payload(state.antigravity_weekly),
+            "model": state.antigravity_model,
+        },
+        "footer": {
+            "rate": state.rate_text,
+            "status": state.status_text,
+            "today": state.today_text,
+            "showInstall": state.show_install_button,
+        },
+    }

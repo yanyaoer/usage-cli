@@ -39,6 +39,7 @@ from Foundation import (
     NSTimer,
 )
 
+import antigravity_loader
 import codex_loader
 import panels
 from history_loader import load_entries
@@ -67,6 +68,7 @@ BUTTON_HEIGHT = 32.0
 INSTALL_BUTTON_EXTRA_HEIGHT = BUTTON_HEIGHT + 10.0
 CLAUDE_COLOR = (244 / 255, 145 / 255, 100 / 255)
 CODEX_COLOR = (88 / 255, 214 / 255, 230 / 255)
+ANTIGRAVITY_COLOR = (66 / 255, 133 / 255, 244 / 255)
 WARN_COLOR = (255 / 255, 196 / 255, 57 / 255)
 DANGER_COLOR = (255 / 255, 69 / 255, 58 / 255)
 
@@ -113,6 +115,9 @@ class PopoverState:
     claude_weekly: QuotaRowState
     codex_session: QuotaRowState
     codex_weekly: QuotaRowState
+    antigravity_session: QuotaRowState
+    antigravity_weekly: QuotaRowState
+    antigravity_model: str
     rate_text: str
     status_text: str
     today_text: str
@@ -149,6 +154,8 @@ class PopoverViewController(NSViewController):
         return self
 
     def rebuildWithPanel_(self, panel: UsagePanel) -> None:
+        if hasattr(self.content_view, "teardown"):
+            self.content_view.teardown()
         self.panel = panel
         self.content_view = panel.build_view(self.delegate)
         self.setView_(self.content_view)
@@ -274,7 +281,8 @@ class AppDelegate(NSObject):
         try:
             outcome = asyncio.run(self._fetch())
             codex_rows, codex_5h_pct = self._codex_rows()
-            state = self._state_from_outcome(outcome, codex_rows)
+            antigravity_rows = self._antigravity_rows()
+            state = self._state_from_outcome(outcome, codex_rows, antigravity_rows)
         except Exception as exc:
             codex_5h_pct = None
             state = _error_state(type(exc).__name__, self.mock)
@@ -342,6 +350,7 @@ class AppDelegate(NSObject):
         self,
         outcome: PollOutcome,
         codex_rows: tuple[QuotaRowState, QuotaRowState],
+        antigravity_rows: tuple[QuotaRowState, QuotaRowState, str],
     ) -> PopoverState:
         now = time.time()
         today_text = _today_title(self.mock)
@@ -376,6 +385,9 @@ class AppDelegate(NSObject):
             claude_weekly=claude_weekly,
             codex_session=codex_rows[0],
             codex_weekly=codex_rows[1],
+            antigravity_session=antigravity_rows[0],
+            antigravity_weekly=antigravity_rows[1],
+            antigravity_model=antigravity_rows[2],
             rate_text=f"速率：{group_name}",
             status_text=status_text,
             today_text=today_text,
@@ -424,6 +436,49 @@ class AppDelegate(NSObject):
         )
         return rows, codex_5h_pct
 
+    def _antigravity_rows(self) -> tuple[QuotaRowState, QuotaRowState, str]:
+        if self.mock:
+            now = time.time()
+            return (
+                _quota_row("Session", 28.0, now + (3 * 3600) + (42 * 60), now, ANTIGRAVITY_COLOR),
+                _quota_row("Weekly", 41.0, now + (5 * 86400) + (6 * 3600), now, ANTIGRAVITY_COLOR),
+                "Gemini 3 Pro",
+            )
+
+        try:
+            snapshot = antigravity_loader.load_antigravity()
+        except Exception:
+            if os.environ.get("USAGE_DEBUG") == "1":
+                logger.warning("antigravity quota load failed", exc_info=True)
+            return (
+                _missing_row("Session", ANTIGRAVITY_COLOR),
+                _missing_row("Weekly", ANTIGRAVITY_COLOR),
+                "--",
+            )
+
+        now = time.time()
+        return (
+            _quota_row(
+                "Session",
+                float(snapshot.used_percent) if snapshot.used_percent is not None else None,
+                snapshot.resets_at,
+                now,
+                ANTIGRAVITY_COLOR,
+            ),
+            _quota_row(
+                "Weekly",
+                (
+                    float(snapshot.weekly_used_percent)
+                    if snapshot.weekly_used_percent is not None
+                    else None
+                ),
+                snapshot.weekly_resets_at,
+                now,
+                ANTIGRAVITY_COLOR,
+            ),
+            snapshot.active_model or "--",
+        )
+
     def _compose_title(self, state: PopoverState) -> str:
         claude_text = state.claude_session.percent_text.replace(" 已用", "")
         base = "🐾 --" if claude_text == "--" else f"🐾 {claude_text}"
@@ -453,6 +508,9 @@ def _empty_state() -> PopoverState:
         claude_weekly=_missing_row("Weekly", CLAUDE_COLOR),
         codex_session=_missing_row("Session", CODEX_COLOR),
         codex_weekly=_missing_row("Weekly", CODEX_COLOR),
+        antigravity_session=_missing_row("Session", ANTIGRAVITY_COLOR),
+        antigravity_weekly=_missing_row("Weekly", ANTIGRAVITY_COLOR),
+        antigravity_model="--",
         rate_text="速率：--",
         status_text="狀態：載入中",
         today_text="今日：$0.00 (0 tokens)",

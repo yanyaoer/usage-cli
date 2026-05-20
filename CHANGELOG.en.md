@@ -5,6 +5,24 @@
 All notable changes to usage are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.0] - 2026-05-20
+
+### Added
+- **Default panel now renders via WKWebView + HTML/CSS**: the classic default panel moved to a shared HTML/CSS layer, paving the way for a future Windows version; macOS still embeds it in `NSPopover` via `WKWebView`.
+- **Antigravity quota tracking**: the popover now shows three cards for Claude Code, Codex, and Antigravity; the Antigravity card has two rows for current usage (Session) and weekly cap (Weekly).
+
+### Changed
+- `antigravity_loader` now splits quota buckets by reset window: ≤24h becomes Session and >24h becomes Weekly. When Google's API exposes a weekly bucket, Weekly fills automatically.
+- WKWebView integration adds a JS bridge (refresh / quit / switch), preload support, and a dark backing layer to remove launch-time white flash; panel switching tears down the web view to break retain cycles.
+- New dependencies: `pyobjc-framework-WebKit`, `pyobjc-framework-Quartz`.
+
+### Removed
+- Removed the CoreGraphics `panels/classic.py` implementation in favor of `HTMLPanel`.
+
+### Internal
+- Tightened `codex_loader` / `history_loader._as_int` typing with `max(0, int(value))`.
+- Use Quartz `CGColorCreateGenericRGB` to create the `CGColorRef`, eliminating the launch-time `ObjCPointerWarning`.
+
 ## 0.3.3 — 2026-05-19
 
 ### Added
