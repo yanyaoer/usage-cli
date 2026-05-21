@@ -4,6 +4,19 @@
 
 本檔記錄 usage 所有重要變更。格式參考 [Keep a Changelog](https://keepachangelog.com/)。
 
+## [0.6.0] - 2026-05-22
+
+### 新增
+- **多語言介面（i18n）**：自動偵測 macOS 系統語言，支援繁體中文、簡體中文、英文、日文、韓文。不需任何設定，系統語言是什麼就顯示什麼。
+- **`USAGE_LANG` 環境變數**：可強制指定語言（例如 `USAGE_LANG=ja`），方便開發與測試。
+
+### 變更
+- **授權從 MIT 改為 AGPL-3.0**：修改後發佈的版本必須開源，保護原作者權益。
+- **popover 底部加入 attribution 小字**：`based on usage by lollapalooza`。
+
+### 修正
+- 移除 `usage_client.py` 中硬寫的中文狀態字串（「✓ 已同步」），改由 i18n 系統統一處理。
+
 ## [0.5.0] - 2026-05-21
 
 ### 新增

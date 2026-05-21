@@ -5,6 +5,19 @@
 All notable changes to usage are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.6.0] - 2026-05-22
+
+### Added
+- **Multi-language UI (i18n)**: automatically detects the macOS system language and displays the interface in Traditional Chinese, Simplified Chinese, English, Japanese, or Korean. No configuration needed.
+- **`USAGE_LANG` environment variable**: force a specific language (e.g. `USAGE_LANG=ja`) for development and testing.
+
+### Changed
+- **License changed from MIT to AGPL-3.0**: modified versions that are distributed must be open-sourced.
+- **Attribution footer in popover**: `based on usage by lollapalooza` shown at the bottom of the panel.
+
+### Fixed
+- Removed hardcoded Chinese status strings (e.g. `✓ 已同步`) from `usage_client.py`; all status text now goes through the i18n system.
+
 ## [0.5.0] - 2026-05-21
 
 ### Added
