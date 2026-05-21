@@ -6,7 +6,7 @@
 [![Latest Release](https://img.shields.io/github/v/release/aqua5230/usage)](https://github.com/aqua5230/usage/releases/latest)
 [![Python](https://img.shields.io/badge/python-3.13-blue.svg)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](https://www.apple.com/macos/)
-[![License](https://img.shields.io/github/license/aqua5230/usage)](LICENSE)
+[![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
 `usage` is a macOS menu bar tool that pins your **Claude Code and Codex** usage to the top-right of your screen. Click the icon for a popover showing Session, Weekly, per-project usage (today / 7-day / monthly), and today's token usage and cost estimate.
 
@@ -263,3 +263,8 @@ If you want to launch usage by double-clicking instead of opening a terminal, bu
 The output is `dist/usage.app`. Double-click it or run `open dist/usage.app`.
 
 Each GitHub Release build (push a `v*` tag) automatically builds the app in CI and attaches `usage.app.zip` to the Release page.
+
+[![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
+
+If you fork or redistribute a modified version, please credit the original author and link to:
+https://github.com/aqua5230/usage

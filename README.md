@@ -6,7 +6,7 @@
 [![Latest Release](https://img.shields.io/github/v/release/aqua5230/usage)](https://github.com/aqua5230/usage/releases/latest)
 [![Python](https://img.shields.io/badge/python-3.13-blue.svg)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](https://www.apple.com/macos/)
-[![License](https://img.shields.io/github/license/aqua5230/usage)](LICENSE)
+[![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
 `usage` 是一個 macOS menu bar（螢幕右上角的選單列）小工具，把 **Claude Code 跟 Codex** 的用量釘在你的螢幕右上角。點開可以看到 Session、Weekly、各專案用量（今日 / 7 日 / 月），以及今日 token 用量與成本估算。
 
@@ -265,3 +265,7 @@ USAGE_DEBUG=1 python3 main.py
 跑完產物會在 `dist/usage.app`。雙擊或 `open dist/usage.app` 就能跑。
 
 每次發 GitHub Release（push 一個 `v*` 開頭的 tag 時），CI 會自動 build 並把 `usage.app.zip` 附加到 Release 頁面。
+
+[![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
+
+若 fork 或發佈衍生版本，請標注原作者與專案連結：https://github.com/aqua5230/usage
