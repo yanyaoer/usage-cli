@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import json
+from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -28,6 +29,7 @@ if TYPE_CHECKING:
 
 PANEL_WIDTH = 364.0
 PANEL_HEIGHT = 812.0
+I18N_PATH = Path(__file__).resolve().parent.parent / "i18n.json"
 
 
 class UsageScriptBridge(NSObject):
@@ -161,7 +163,17 @@ def _load_panel_html(filename: str) -> str:
     return (
         html.replace("{{CLAUDE_ICON}}", _data_uri("claude.webp"))
         .replace("{{CODEX_ICON}}", _data_uri("codex.webp"))
+        .replace("{{I18N_BUNDLE}}", json.dumps(_load_i18n_bundle(), ensure_ascii=False))
     )
+
+
+@lru_cache(maxsize=1)
+def _load_i18n_bundle() -> dict[str, dict[str, str]]:
+    data = json.loads(I18N_PATH.read_text(encoding="utf-8"))
+    return {
+        str(lang): {str(key): str(value) for key, value in values.items()}
+        for lang, values in data.items()
+    }
 
 
 def _data_uri(asset_name: str) -> str:
@@ -182,6 +194,7 @@ def _row_payload(row: QuotaRowState) -> dict[str, object]:
 
 def _state_payload(state: PopoverState) -> dict[str, object]:
     return {
+        "language": state.language,
         "claude": {
             "session": _row_payload(state.claude_session),
             "weekly": _row_payload(state.claude_weekly),

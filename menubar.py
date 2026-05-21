@@ -5,12 +5,15 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import io
+import json
 import logging
 import os
 import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 import objc
@@ -31,6 +34,7 @@ from AppKit import (
     NSViewController,
 )
 from Foundation import (
+    NSLocale,
     NSObject,
     NSRunLoop,
     NSRunLoopCommonModes,
@@ -54,6 +58,7 @@ WARN_COLOR = (255 / 255, 196 / 255, 57 / 255)
 DANGER_COLOR = (255 / 255, 69 / 255, 58 / 255)
 
 logger = logging.getLogger(__name__)
+I18N_PATH = Path(__file__).with_name("i18n.json")
 
 
 def _bar_color(pct: float, brand: tuple[float, float, float]) -> tuple[float, float, float]:
@@ -62,6 +67,48 @@ def _bar_color(pct: float, brand: tuple[float, float, float]) -> tuple[float, fl
     if pct >= 50:
         return WARN_COLOR
     return brand
+
+
+@lru_cache(maxsize=1)
+def _load_i18n_bundle() -> dict[str, dict[str, str]]:
+    data = json.loads(I18N_PATH.read_text(encoding="utf-8"))
+    return {
+        str(lang): {str(key): str(value) for key, value in values.items()}
+        for lang, values in data.items()
+    }
+
+
+def _normalize_language(code: str | None) -> str:
+    if code and code.lower().startswith("zh"):
+        return "zh-TW"
+    return "en"
+
+
+def _detect_language() -> str:
+    try:
+        locale = NSLocale.currentLocale()
+        code_attr = getattr(locale, "languageCode", None)
+        code = code_attr() if callable(code_attr) else code_attr
+        return _normalize_language(str(code) if code is not None else None)
+    except Exception:
+        return "en"
+
+
+def _t(language: str, key: str, **kwargs: object) -> str:
+    bundle = _load_i18n_bundle()
+    table = bundle.get(language) or bundle["en"]
+    template = table.get(key) or bundle["en"].get(key) or key
+    return template.format(**kwargs)
+
+
+def _group_name(group: int, language: str) -> str:
+    return _t(language, f"group_{GROUP_NAMES[group].lower()}")
+
+
+def _panel_title(panel: UsagePanel, language: str) -> str:
+    if panel.id == "classic":
+        return _t(language, "panel_default_name")
+    return panel.display_name
 
 
 _APP_DELEGATE: AppDelegate | None = None
@@ -79,6 +126,7 @@ class QuotaRowState:
 
 @dataclass(slots=True)
 class PopoverState:
+    language: str
     claude_session: QuotaRowState
     claude_weekly: QuotaRowState
     codex_session: QuotaRowState
@@ -92,18 +140,18 @@ class PopoverState:
     show_install_button: bool = False
 
 
-def format_human_time(seconds: float) -> str:
+def format_human_time(seconds: float, language: str = "en") -> str:
     if seconds <= 0:
-        return "0m"
+        return _t(language, "duration_minutes", minutes=0)
     days, remainder = divmod(int(seconds), 86400)
     hours, remainder = divmod(remainder, 3600)
     minutes, _ = divmod(remainder, 60)
 
     if days > 0:
-        return f"{days}d {hours}h"
+        return _t(language, "duration_days", days=days, hours=hours)
     if hours > 0:
-        return f"{hours}h {minutes}m"
-    return f"{minutes}m"
+        return _t(language, "duration_hours", hours=hours, minutes=minutes)
+    return _t(language, "duration_minutes", minutes=minutes)
 
 
 class PopoverViewController(NSViewController):
@@ -145,6 +193,7 @@ class AppDelegate(NSObject):
     active_panel = objc.ivar()
     codex_5h_pct = objc.ivar()
     _refresh_in_flight = objc.ivar()
+    language = objc.ivar()
 
     def initWithMock_interval_(self, mock: bool, interval: int) -> AppDelegate:
         self = objc.super(AppDelegate, self).init()
@@ -153,8 +202,9 @@ class AppDelegate(NSObject):
         self.mock = mock
         self.interval = max(30, interval)
         self.tracker = UsageRateTracker(mock=mock)
+        self.language = _detect_language()
         self.codex_5h_pct = None
-        self.latest_state = _empty_state()
+        self.latest_state = _empty_state(self.language)
         self.active_panel = panels.get_panel(load_active_panel_id())
         self._refresh_in_flight = False
         return self
@@ -204,10 +254,10 @@ class AppDelegate(NSObject):
         NSApp.terminate_(sender)
 
     def switchPanel_(self, sender: Any) -> None:
-        menu = NSMenu.alloc().initWithTitle_("更換面板")
+        menu = NSMenu.alloc().initWithTitle_(_t(self.language, "switch_panel"))
         for panel in panels.all_panels():
             item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-                panel.display_name,
+                _panel_title(panel, self.language),
                 "selectPanel:",
                 "",
             )
@@ -263,7 +313,7 @@ class AppDelegate(NSObject):
             if os.environ.get("USAGE_DEBUG") == "1":
                 logger.warning("refresh failed", exc_info=True)
             codex_5h_pct = None
-            state = _error_state(type(exc).__name__, self.mock)
+            state = _error_state(type(exc).__name__, self.mock, self.language)
 
         result = {"state": state, "codex_5h_pct": codex_5h_pct}
         self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -279,8 +329,18 @@ class AppDelegate(NSObject):
         self.latest_state = state
         self.popover_controller.setState_(state)
         self.popover.setContentSize_(_popover_size(state, self.active_panel))
+        self._inject_web_language(state.language)
         self.status_item.button().setTitle_(self._compose_title(state))
         self._refresh_in_flight = False
+
+    def _inject_web_language(self, language: str) -> None:
+        content_view = self.popover_controller.content_view
+        if not hasattr(content_view, "evaluateJavaScript_completionHandler_"):
+            return
+        content_view.evaluateJavaScript_completionHandler_(
+            f"window.usageSetLanguage && window.usageSetLanguage({json.dumps(language)})",
+            None,
+        )
 
     def _install_hook_in_background(self) -> None:
         output = io.StringIO()
@@ -310,10 +370,12 @@ class AppDelegate(NSObject):
     def _finishHookInstall_(self, result: dict[str, Any]) -> None:
         alert = NSAlert.alloc().init()
         if result["success"]:
-            alert.setMessageText_("已安裝完成，請重開 Claude Code 一次")
+            alert.setMessageText_(_t(self.language, "hook_installed_restart"))
         else:
-            alert.setMessageText_("安裝 hook 失敗")
-            alert.setInformativeText_(result["message"] or "setup_hook.setup() 回傳失敗")
+            alert.setMessageText_(_t(self.language, "hook_install_failed"))
+            alert.setInformativeText_(
+                result["message"] or _t(self.language, "hook_install_failed_default")
+            )
         alert.runModal()
         self._refresh()
 
@@ -333,19 +395,23 @@ class AppDelegate(NSObject):
         project_rows_30d: list[tuple[str, int, float | None]],
     ) -> PopoverState:
         now = time.time()
-        today_text = _today_title(self.mock)
-        group_name = GROUP_NAMES[self.tracker.group()]
-        status_text = f"狀態：{outcome.message or '載入中'}"
+        today_text = _today_title(self.mock, self.language)
+        group_name = _group_name(self.tracker.group(), self.language)
+        status_text = _t(
+            self.language,
+            "status_text",
+            value=outcome.message or _t(self.language, "status_loading"),
+        )
 
         if outcome.state == PollState.SUCCESS and outcome.snapshot is not None:
             snapshot = outcome.snapshot
-            group_name = GROUP_NAMES[self.tracker.group()]
             claude_session = _quota_row(
                 "Session",
                 float(snapshot.current_percent) if snapshot.current_percent is not None else None,
                 snapshot.current_reset_at,
                 now,
                 CLAUDE_COLOR,
+                self.language,
             )
             claude_weekly = _quota_row(
                 "Weekly",
@@ -353,14 +419,24 @@ class AppDelegate(NSObject):
                 snapshot.weekly_reset_at,
                 now,
                 CLAUDE_COLOR,
+                self.language,
             )
-            status_text = f"狀態：{outcome.message or '✓ 已同步'}"
+            status_text = _t(
+                self.language,
+                "status_text",
+                value=outcome.message or _t(self.language, "status_synced"),
+            )
         else:
-            claude_session = _missing_row("Session", CLAUDE_COLOR)
-            claude_weekly = _missing_row("Weekly", CLAUDE_COLOR)
-            status_text = f"狀態：{outcome.message or '無資料'}"
+            claude_session = _missing_row("Session", CLAUDE_COLOR, self.language)
+            claude_weekly = _missing_row("Weekly", CLAUDE_COLOR, self.language)
+            status_text = _t(
+                self.language,
+                "status_text",
+                value=outcome.message or _t(self.language, "status_no_data"),
+            )
 
         return PopoverState(
+            language=self.language,
             claude_session=claude_session,
             claude_weekly=claude_weekly,
             codex_session=codex_rows[0],
@@ -368,7 +444,7 @@ class AppDelegate(NSObject):
             projects=projects,
             projects_7d=project_rows_7d,
             projects_30d=project_rows_30d,
-            rate_text=f"速率：{group_name}",
+            rate_text=_t(self.language, "rate_text", value=group_name),
             status_text=status_text,
             today_text=today_text,
             show_install_button=outcome.state == PollState.TOKEN_ERROR,
@@ -378,8 +454,15 @@ class AppDelegate(NSObject):
         if self.mock:
             now = time.time()
             rows = (
-                _quota_row("Session", 12.0, now + (4 * 3600) + (15 * 60), now, CODEX_COLOR),
-                _quota_row("Weekly", 28.0, now + (4 * 86400), now, CODEX_COLOR),
+                _quota_row(
+                    "Session",
+                    12.0,
+                    now + (4 * 3600) + (15 * 60),
+                    now,
+                    CODEX_COLOR,
+                    self.language,
+                ),
+                _quota_row("Weekly", 28.0, now + (4 * 86400), now, CODEX_COLOR, self.language),
             )
             return rows, 12
 
@@ -391,7 +474,10 @@ class AppDelegate(NSObject):
             rate_limits = None
 
         if rate_limits is None:
-            rows = _missing_row("Session", CODEX_COLOR), _missing_row("Weekly", CODEX_COLOR)
+            rows = (
+                _missing_row("Session", CODEX_COLOR, self.language),
+                _missing_row("Weekly", CODEX_COLOR, self.language),
+            )
             return rows, None
 
         now = time.time()
@@ -405,6 +491,7 @@ class AppDelegate(NSObject):
                 rate_limits.five_hour_resets_at,
                 now,
                 CODEX_COLOR,
+                self.language,
             ),
             _quota_row(
                 "Weekly",
@@ -412,6 +499,7 @@ class AppDelegate(NSObject):
                 rate_limits.seven_day_resets_at,
                 now,
                 CODEX_COLOR,
+                self.language,
             ),
         )
         return rows, codex_5h_pct
@@ -466,8 +554,11 @@ class AppDelegate(NSObject):
         return rows
 
     def _compose_title(self, state: PopoverState) -> str:
-        claude_text = state.claude_session.percent_text.replace(" 已用", "")
-        base = "🐾 --" if claude_text == "--" else f"🐾 {claude_text}"
+        base = (
+            "🐾 --"
+            if state.claude_session.percent is None
+            else f"🐾 {_format_percent(state.claude_session.percent)}%"
+        )
         if self.codex_5h_pct is None:
             return base
         return f"{base} · 📜 {self.codex_5h_pct}%"
@@ -488,26 +579,31 @@ def _popover_size(state: PopoverState, panel: UsagePanel | None = None) -> Any:
     return NSMakeSize(width, height)
 
 
-def _empty_state() -> PopoverState:
+def _empty_state(language: str = "en") -> PopoverState:
     return PopoverState(
-        claude_session=_missing_row("Session", CLAUDE_COLOR),
-        claude_weekly=_missing_row("Weekly", CLAUDE_COLOR),
-        codex_session=_missing_row("Session", CODEX_COLOR),
-        codex_weekly=_missing_row("Weekly", CODEX_COLOR),
+        language=language,
+        claude_session=_missing_row("Session", CLAUDE_COLOR, language),
+        claude_weekly=_missing_row("Weekly", CLAUDE_COLOR, language),
+        codex_session=_missing_row("Session", CODEX_COLOR, language),
+        codex_weekly=_missing_row("Weekly", CODEX_COLOR, language),
         projects=[],
         projects_7d=[],
         projects_30d=[],
-        rate_text="速率：--",
-        status_text="狀態：載入中",
-        today_text="今日：$0.00 (0 tokens)",
+        rate_text=_t(language, "rate_text", value="--"),
+        status_text=_t(language, "status_text", value=_t(language, "status_loading")),
+        today_text=_t(language, "today_text", cost="0.00", tokens="0"),
         show_install_button=False,
     )
 
 
-def _error_state(message: str, mock: bool) -> PopoverState:
-    state = _empty_state()
-    state.status_text = f"狀態：錯誤 ({message})"
-    state.today_text = _today_title(mock)
+def _error_state(message: str, mock: bool, language: str = "en") -> PopoverState:
+    state = _empty_state(language)
+    state.status_text = _t(
+        language,
+        "status_text",
+        value=_t(language, "status_error", message=message),
+    )
+    state.today_text = _today_title(mock, language)
     state.show_install_button = False
     return state
 
@@ -518,34 +614,39 @@ def _quota_row(
     resets_at: float | None,
     now: float,
     color: tuple[float, float, float],
+    language: str = "en",
 ) -> QuotaRowState:
     if pct is None or resets_at is None:
-        return _missing_row(title, color)
+        return _missing_row(title, color, language)
     pct = max(0.0, min(100.0, float(pct)))
     return QuotaRowState(
         title=title,
         percent=pct,
-        percent_text=f"{_format_percent(pct)}% 已用",
-        reset_text=f"重置 {format_human_time(resets_at - now)}",
+        percent_text=_t(language, "percent_used", value=_format_percent(pct)),
+        reset_text=_t(language, "reset_in", time=format_human_time(resets_at - now, language)),
         color=_bar_color(pct, color),
         available=True,
     )
 
 
-def _missing_row(title: str, color: tuple[float, float, float]) -> QuotaRowState:
+def _missing_row(
+    title: str,
+    color: tuple[float, float, float],
+    language: str = "en",
+) -> QuotaRowState:
     return QuotaRowState(
         title=title,
         percent=None,
         percent_text="--",
-        reset_text="重置 --",
+        reset_text=_t(language, "reset_placeholder"),
         color=color,
         available=False,
     )
 
 
-def _today_title(mock: bool = False) -> str:
+def _today_title(mock: bool = False, language: str = "en") -> str:
     if mock:
-        return "今日：$45.20 (50,193,442 tokens)"
+        return _t(language, "today_text", cost="45.20", tokens="50,193,442")
 
     try:
         today = datetime.now().astimezone().date()
@@ -561,9 +662,9 @@ def _today_title(mock: bool = False) -> str:
     except Exception:
         if os.environ.get("USAGE_DEBUG") == "1":
             logger.warning("today totals load failed", exc_info=True)
-        return "今日：$0.00 (0 tokens)"
+        return _t(language, "today_text", cost="0.00", tokens="0")
 
-    return f"今日：${total_cost:.2f} ({total_tokens:,} tokens)"
+    return _t(language, "today_text", cost=f"{total_cost:.2f}", tokens=f"{total_tokens:,}")
 
 
 def _format_percent(value: float) -> str:

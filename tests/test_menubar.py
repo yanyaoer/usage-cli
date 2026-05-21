@@ -54,7 +54,7 @@ def test_quota_row_returns_missing_when_reset_is_none() -> None:
 
 
 def test_quota_row_formats_available_row() -> None:
-    row = menubar._quota_row("Session", 50.5, 1_090.0, 1_000.0, menubar.CODEX_COLOR)
+    row = menubar._quota_row("Session", 50.5, 1_090.0, 1_000.0, menubar.CODEX_COLOR, language="zh-TW")
 
     assert row.available is True
     assert row.percent == 50.5
@@ -64,8 +64,8 @@ def test_quota_row_formats_available_row() -> None:
 
 
 def test_quota_row_clamps_percent_to_range() -> None:
-    high = menubar._quota_row("Session", 150.0, 1_090.0, 1_000.0, menubar.CODEX_COLOR)
-    low = menubar._quota_row("Session", -10.0, 1_090.0, 1_000.0, menubar.CODEX_COLOR)
+    high = menubar._quota_row("Session", 150.0, 1_090.0, 1_000.0, menubar.CODEX_COLOR, language="zh-TW")
+    low = menubar._quota_row("Session", -10.0, 1_090.0, 1_000.0, menubar.CODEX_COLOR, language="zh-TW")
 
     assert high.percent == 100.0
     assert high.percent_text == "100% 已用"
@@ -74,7 +74,7 @@ def test_quota_row_clamps_percent_to_range() -> None:
 
 
 def test_missing_row() -> None:
-    row = menubar._missing_row("Weekly", menubar.CLAUDE_COLOR)
+    row = menubar._missing_row("Weekly", menubar.CLAUDE_COLOR, language="zh-TW")
 
     assert row.available is False
     assert row.percent is None
@@ -83,7 +83,7 @@ def test_missing_row() -> None:
 
 
 def test_today_title_mock() -> None:
-    assert menubar._today_title(mock=True) == "今日：$45.20 (50,193,442 tokens)"
+    assert menubar._today_title(mock=True, language="zh-TW") == "今日：$45.20 (50,193,442 tokens)"
 
 
 def test_today_title_returns_zero_fallback_when_loaders_fail(
@@ -95,7 +95,7 @@ def test_today_title_returns_zero_fallback_when_loaders_fail(
         lambda *, hours_back=24: (_ for _ in ()).throw(OSError),
     )
 
-    assert menubar._today_title(mock=False) == "今日：$0.00 (0 tokens)"
+    assert menubar._today_title(mock=False, language="zh-TW") == "今日：$0.00 (0 tokens)"
 
 
 def test_empty_state() -> None:
@@ -115,7 +115,7 @@ def test_empty_state() -> None:
 
 
 def test_error_state_uses_message_and_mock_today_title() -> None:
-    state = menubar._error_state("boom", mock=True)
+    state = menubar._error_state("boom", mock=True, language="zh-TW")
 
     assert "boom" in state.status_text
     assert state.today_text == "今日：$45.20 (50,193,442 tokens)"
