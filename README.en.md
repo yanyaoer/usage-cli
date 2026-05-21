@@ -8,7 +8,7 @@
 [![Platform](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](https://www.apple.com/macos/)
 [![License](https://img.shields.io/github/license/aqua5230/usage)](LICENSE)
 
-`usage` is a macOS menu bar tool that pins your **Claude Code and Codex** usage to the top-right of your screen. Click the icon for a popover showing Session, Weekly, and today's token usage and cost estimate.
+`usage` is a macOS menu bar tool that pins your **Claude Code and Codex** usage to the top-right of your screen. Click the icon for a popover showing Session, Weekly, per-project usage (today / 7-day / monthly), and today's token usage and cost estimate.
 
 It **never calls the Anthropic / OpenAI API** and **never reads the Keychain**, so it avoids the observer effect of "pinging once a minute counts as usage."
 
@@ -148,10 +148,11 @@ python3 main.py
 
   <img src="docs/menubar.png" alt="menu bar display" width="240">
 
-- **Click the icon to expand the popover.** It has three sections:
+- **Click the icon to expand the popover.** It has four sections:
   1. Two cards for Claude Code and Codex. Each shows Session and Weekly progress bars with reset countdowns.
-  2. A footer card showing current rate, sync status, and today's token usage and cost estimate (Claude uses the actual `costUSD` from its log when available; Codex cost is estimated from token count × pricing table).
-  3. Two buttons: "Refresh now" and "Quit".
+  2. A projects card listing the top three projects by usage. Click the button in the top-right corner to cycle between today / 7-day / monthly views.
+  3. A footer card showing current rate, sync status, and today's token usage and cost estimate (Claude uses the actual `costUSD` from its log when available; Codex cost is estimated from token count × pricing table).
+  4. Two buttons: "Refresh now" and "Quit".
 - **Panel**: click the `⇄ Switch panel` button in the Claude Code card's top-right corner to switch panel styles. v0.5.0 ships with one built-in panel; more are being redesigned.
 
   <p align="center">

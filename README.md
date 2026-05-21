@@ -8,7 +8,7 @@
 [![Platform](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](https://www.apple.com/macos/)
 [![License](https://img.shields.io/github/license/aqua5230/usage)](LICENSE)
 
-`usage` 是一個 macOS menu bar（螢幕右上角的選單列）小工具，把 **Claude Code 跟 Codex** 的用量釘在你的螢幕右上角。點開可以看到 Session、Weekly、今日 token 用量與成本估算。
+`usage` 是一個 macOS menu bar（螢幕右上角的選單列）小工具，把 **Claude Code 跟 Codex** 的用量釘在你的螢幕右上角。點開可以看到 Session、Weekly、各專案用量（今日 / 7 日 / 月），以及今日 token 用量與成本估算。
 
 不呼叫 Anthropic / OpenAI 的 API（接口）、也不讀 Keychain（macOS 內建的密碼保險箱），所以不會發生「自己每分鐘 ping 一次也算用量」這種事。
 
@@ -150,10 +150,11 @@ python3 main.py
 
   <img src="docs/menubar.png" alt="menu bar 上方顯示樣式" width="240">
 
-- **點一下會展開 popover**，分三塊：
+- **點一下會展開 popover**，分四塊：
   1. 上面兩張卡片分別是 Claude Code 跟 Codex；每張各有 Session 跟 Weekly 兩條進度條
-  2. 最下面那張小卡是目前速率、同步狀態、今日 token 用量與成本估算（Claude 若 log 有提供實際金額則直接顯示；Codex 成本為依 token 數估算）
-  3. 兩顆按鈕：「立即更新」、「結束」
+  2. 專案用量卡：列出近期用量前三名的專案，可點右上角按鈕在「今日 / 7 日 / 月」三段之間切換
+  3. 最下面那張小卡是目前速率、同步狀態、今日 token 用量與成本估算（Claude 若 log 有提供實際金額則直接顯示；Codex 成本為依 token 數估算）
+  4. 兩顆按鈕：「立即更新」、「結束」
 - **面板**：點 Claude Code 卡片右上角的「⇄ 更換面板」按鈕可切換面板樣式。v0.5.0 目前內建一款預設面板，更多面板正在重新設計中。
 
   <p align="center">
