@@ -13,7 +13,7 @@
 It **never calls the Anthropic / OpenAI API** and **never reads the Keychain**, so it avoids the observer effect of "pinging once a minute counts as usage."
 
 <p align="center">
-  <img src="docs/popover.png" alt="usage popover" width="320">
+  <img src="docs/popover.en.png" alt="usage popover" width="320">
 </p>
 
 ## How it gets the data
@@ -156,7 +156,7 @@ python3 main.py
 - **Panel**: click the `⇄ Switch panel` button in the Claude Code card's top-right corner to switch panel styles. v0.5.0 ships with one built-in panel; more are being redesigned.
 
   <p align="center">
-    <img src="docs/popover.png" alt="default panel" width="320">
+    <img src="docs/popover.en.png" alt="default panel" width="320">
   </p>
 
   Your choice is persisted via `NSUserDefaults`, so the last selected panel survives restarts.
