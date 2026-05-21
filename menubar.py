@@ -79,12 +79,27 @@ def _load_i18n_bundle() -> dict[str, dict[str, str]]:
 
 
 def _normalize_language(code: str | None) -> str:
-    if code and code.lower().startswith("zh"):
+    if not code:
+        return "en"
+    normalized = code.strip().lower().replace("_", "-")
+    if normalized in {"zh-tw", "zh-hant"} or normalized.startswith("zh-tw-"):
         return "zh-TW"
+    if normalized in {"zh-cn", "zh-hans", "zh"} or normalized.startswith("zh-cn-"):
+        return "zh-CN"
+    if normalized.startswith("zh-hans"):
+        return "zh-CN"
+    if normalized.startswith("zh-hant"):
+        return "zh-TW"
+    if normalized.startswith("ja"):
+        return "ja"
+    if normalized.startswith("ko"):
+        return "ko"
     return "en"
 
 
 def _detect_language() -> str:
+    if override := os.environ.get("USAGE_LANG"):
+        return _normalize_language(override)
     try:
         locale = NSLocale.currentLocale()
         code_attr = getattr(locale, "languageCode", None)

@@ -54,7 +54,9 @@ def test_quota_row_returns_missing_when_reset_is_none() -> None:
 
 
 def test_quota_row_formats_available_row() -> None:
-    row = menubar._quota_row("Session", 50.5, 1_090.0, 1_000.0, menubar.CODEX_COLOR, language="zh-TW")
+    row = menubar._quota_row(
+        "Session", 50.5, 1_090.0, 1_000.0, menubar.CODEX_COLOR, language="zh-TW"
+    )
 
     assert row.available is True
     assert row.percent == 50.5
@@ -64,8 +66,12 @@ def test_quota_row_formats_available_row() -> None:
 
 
 def test_quota_row_clamps_percent_to_range() -> None:
-    high = menubar._quota_row("Session", 150.0, 1_090.0, 1_000.0, menubar.CODEX_COLOR, language="zh-TW")
-    low = menubar._quota_row("Session", -10.0, 1_090.0, 1_000.0, menubar.CODEX_COLOR, language="zh-TW")
+    high = menubar._quota_row(
+        "Session", 150.0, 1_090.0, 1_000.0, menubar.CODEX_COLOR, language="zh-TW"
+    )
+    low = menubar._quota_row(
+        "Session", -10.0, 1_090.0, 1_000.0, menubar.CODEX_COLOR, language="zh-TW"
+    )
 
     assert high.percent == 100.0
     assert high.percent_text == "100% 已用"
