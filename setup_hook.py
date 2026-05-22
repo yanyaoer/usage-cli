@@ -117,8 +117,6 @@ def _migrate_from_legacy_usage() -> None:
 
     if changed:
         print(f"ℹ 已從 v0.1.x ({LEGACY_NAME}) 自動 migrate 到 usage")
-    else:
-        print("ℹ 無需 migration")
 
 
 def _load_settings() -> dict[str, Any]:

@@ -21,7 +21,7 @@ LITELLM_PRICING_URL = (
 CACHE_PATH = Path(os.path.expanduser("~/.claude/pricing_cache.json"))
 CACHE_TTL_DAYS = 7
 FALLBACK_RETRY_SECONDS = 600
-USER_AGENT = "usage/0.2"
+USER_AGENT = "usage/0.9"
 PROVIDER_PREFIXES = (
     "openai/",
     "anthropic/",

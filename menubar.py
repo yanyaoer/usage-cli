@@ -11,7 +11,7 @@ import os
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -46,7 +46,7 @@ import codex_loader
 import login_item
 import panels
 from burn_rate import WARNING_PERCENT_FLOOR, BurnRateTracker
-from history_loader import load_entries
+from history_loader import UsageEntry, load_entries
 from panels.base import Panel as UsagePanel
 from panels.base import load_active_panel_id, save_active_panel_id
 from pricing import calculate_cost
@@ -363,15 +363,17 @@ class AppDelegate(NSObject):
         try:
             outcome = asyncio.run(self._fetch())
             codex_rows, codex_5h_pct = self._codex_rows()
-            project_rows = self._project_rows(hours_back=24)
-            project_rows_7d = self._project_rows(hours_back=168)
-            project_rows_30d = self._project_rows(hours_back=720)
+            all_entries = self._load_history_entries()
+            project_rows = self._project_rows(hours_back=24, entries=all_entries)
+            project_rows_7d = self._project_rows(hours_back=168, entries=all_entries)
+            project_rows_30d = self._project_rows(hours_back=720, entries=all_entries)
             state = self._state_from_outcome(
                 outcome,
                 codex_rows,
                 project_rows,
                 project_rows_7d,
                 project_rows_30d,
+                history_entries=all_entries,
             )
         except Exception as exc:
             if os.environ.get("USAGE_DEBUG") == "1":
@@ -457,9 +459,10 @@ class AppDelegate(NSObject):
         projects: list[tuple[str, int, float | None]],
         project_rows_7d: list[tuple[str, int, float | None]],
         project_rows_30d: list[tuple[str, int, float | None]],
+        history_entries: list[UsageEntry] | None = None,
     ) -> PopoverState:
         now = time.time()
-        today_text = _today_title(self.mock, self.language)
+        today_text = _today_title(self.mock, self.language, entries=history_entries)
         group_name = _group_name(self.tracker.group(), self.language)
         status_text = _t(
             self.language,
@@ -597,7 +600,21 @@ class AppDelegate(NSObject):
         )
         return rows, codex_5h_pct
 
-    def _project_rows(self, hours_back: int = 24) -> list[tuple[str, int, float | None]]:
+    def _load_history_entries(self) -> list[UsageEntry]:
+        if self.mock:
+            return []
+        try:
+            return load_entries(hours_back=720)
+        except Exception:
+            if os.environ.get("USAGE_DEBUG") == "1":
+                logger.warning("project usage load failed", exc_info=True)
+            return []
+
+    def _project_rows(
+        self,
+        hours_back: int = 24,
+        entries: list[UsageEntry] | None = None,
+    ) -> list[tuple[str, int, float | None]]:
         if self.mock:
             if hours_back <= 24:
                 return [
@@ -617,15 +634,19 @@ class AppDelegate(NSObject):
                 ("AI客服", 22_000_000, 13.20),
             ]
 
-        try:
-            entries = load_entries(hours_back=hours_back)
-        except Exception:
-            if os.environ.get("USAGE_DEBUG") == "1":
-                logger.warning("project usage load failed", exc_info=True)
-            return []
+        if entries is None:
+            try:
+                resolved = load_entries(hours_back=hours_back)
+            except Exception:
+                if os.environ.get("USAGE_DEBUG") == "1":
+                    logger.warning("project usage load failed", exc_info=True)
+                return []
+        else:
+            cutoff = datetime.now(tz=UTC) - timedelta(hours=hours_back)
+            resolved = [e for e in entries if e.timestamp >= cutoff]
 
         aggregates: dict[str, list[float]] = {}
-        for entry in entries:
+        for entry in resolved:
             bucket = aggregates.setdefault(entry.project, [0.0, 0.0])
             bucket[0] += entry.total_tokens
             bucket[1] += calculate_cost(entry)
@@ -757,7 +778,11 @@ def _missing_row(
     )
 
 
-def _today_title(mock: bool = False, language: str = "en") -> str:
+def _today_title(
+    mock: bool = False,
+    language: str = "en",
+    entries: list[UsageEntry] | None = None,
+) -> str:
     if mock:
         return _t(language, "today_text", cost="45.20", tokens="50,193,442")
 
@@ -766,8 +791,9 @@ def _today_title(mock: bool = False, language: str = "en") -> str:
         total_tokens = 0
         total_cost = 0.0
 
-        entries = load_entries(hours_back=24) + codex_loader.load_entries(hours_back=24)
-        for entry in entries:
+        history = entries if entries is not None else load_entries(hours_back=24)
+        all_entries = list(history) + codex_loader.load_entries(hours_back=24)
+        for entry in all_entries:
             if entry.timestamp.astimezone().date() != today:
                 continue
             total_tokens += entry.total_tokens
