@@ -157,7 +157,7 @@ python3 main.py
   2. 專案用量卡：列出近期用量前三名的專案，可點右上角按鈕在「今日 / 7 日 / 月」三段之間切換
   3. 最下面那張小卡是目前速率、同步狀態、今日 token 用量與成本估算（Claude 若 log 有提供實際金額則直接顯示；Codex 成本為依 token 數估算）
   4. 兩顆按鈕：「立即更新」、「結束」
-- **面板**：點 Claude Code 卡片右上角的「⇄ 更換面板」按鈕可切換面板樣式。v0.6 內建三款面板 ——「預設」（簡潔白色卡片）、「駭客任務 Matrix」（黑底螢光綠＋數位雨動畫）與「視窗 95」（Windows 95 復古介面：teal 桌布、寶藍標題列、3D 灰色視窗）。
+- **面板**：點 Claude Code 卡片右上角的「⇄ 更換面板」按鈕可切換面板樣式。v0.6 內建四款面板 ——「預設」（簡潔白色卡片）、「駭客任務 Matrix」（黑底螢光綠＋數位雨動畫）、「視窗 95」（Windows 95 復古介面：teal 桌布、寶藍標題列、3D 灰色視窗）與「復古報紙」（米黃報紙風：明體油墨字、雙線版心框、報紙欄頭式標題）。
 
   <p align="center">
     <img src="docs/popover.png" alt="預設面板" width="320">
@@ -165,6 +165,8 @@ python3 main.py
     <img src="docs/matrix.png" alt="駭客任務面板" width="320">
     &nbsp;&nbsp;
     <img src="docs/win95.png" alt="視窗 95 面板" width="320">
+    &nbsp;&nbsp;
+    <img src="docs/newspaper.png" alt="復古報紙面板" width="320">
   </p>
 
   選擇會記進 `NSUserDefaults`（macOS 內建的偏好設定儲存區），下次開 app 會記得上次選的面板。
