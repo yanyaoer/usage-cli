@@ -1,0 +1,1121 @@
+package main
+
+import (
+	"bufio"
+	"database/sql"
+	"encoding/json"
+	"flag"
+	"fmt"
+	"io"
+	"io/fs"
+	"math"
+	"net/http"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+
+	_ "modernc.org/sqlite"
+)
+
+type AgentCategory string
+
+const (
+	AgentClaude AgentCategory = "claude"
+	AgentCodex  AgentCategory = "codex"
+	AgentPi     AgentCategory = "pi"
+	AgentOMP    AgentCategory = "omp"
+)
+
+type Window string
+
+const (
+	WindowDay   Window = "day"
+	WindowWeek  Window = "week"
+	WindowMonth Window = "month"
+)
+
+type UsageEntry struct {
+	Timestamp           time.Time
+	SessionID           string
+	MessageID           string
+	RequestID           string
+	Model               string
+	InputTokens         int64
+	OutputTokens        int64
+	CacheCreationTokens int64
+	CacheReadTokens     int64
+	CostUSD             *float64
+	Project             string
+	AgentCategory       AgentCategory
+	SourceFile          string
+}
+
+func (e UsageEntry) TotalTokens() int64 {
+	return e.InputTokens + e.OutputTokens + e.CacheCreationTokens + e.CacheReadTokens
+}
+
+type Pricing map[string]ModelPrice
+
+type ModelPrice struct {
+	Input         float64
+	Output        float64
+	CacheCreation float64
+	CacheRead     float64
+}
+
+type Totals struct {
+	Entries             int64
+	Tokens              int64
+	Cost                float64
+	InputTokens         int64
+	OutputTokens        int64
+	CacheCreationTokens int64
+	CacheReadTokens     int64
+}
+
+type GroupKey struct {
+	Model         string
+	AgentCategory AgentCategory
+}
+
+type Options struct {
+	Home string
+	Now  time.Time
+}
+
+var dateSuffixes = []string{"-20060102", "-2006-01-02"}
+
+const liteLLMPricingURL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
+const pricingCacheTTL = 7 * 24 * time.Hour
+
+func main() {
+	windowFlag := flag.String("view", "day", "view: day, week, month, all")
+	homeFlag := flag.String("home", "", "home directory override for tests")
+	flag.Parse()
+
+	home := *homeFlag
+	if home == "" {
+		var err error
+		home, err = os.UserHomeDir()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "usage-go: cannot resolve home: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
+	entries := LoadAllEntries(Options{Home: home, Now: time.Now()})
+	pricing := LoadPricing(home)
+
+	views := []Window{WindowDay, WindowWeek, WindowMonth}
+	if *windowFlag != "all" {
+		view := Window(*windowFlag)
+		if view != WindowDay && view != WindowWeek && view != WindowMonth {
+			fmt.Fprintf(os.Stderr, "usage-go: unsupported view %q\n", *windowFlag)
+			os.Exit(2)
+		}
+		views = []Window{view}
+	}
+
+	Render(entries, pricing, views, time.Now())
+}
+
+func LoadAllEntries(opts Options) []UsageEntry {
+	if opts.Now.IsZero() {
+		opts.Now = time.Now()
+	}
+	var entries []UsageEntry
+	entries = append(entries, LoadCachedEntries(filepath.Join(opts.Home, ".claude", "projects"), AgentClaude, opts.Now, opts.Home, func(path string, root string, now time.Time) []UsageEntry { return LoadClaudeFile(path, root) })...)
+	entries = append(entries, LoadCachedEntries(filepath.Join(opts.Home, ".codex"), AgentCodex, opts.Now, opts.Home, func(path string, root string, now time.Time) []UsageEntry { return LoadCodexFile(path, root) })...)
+	entries = append(entries, LoadCachedEntries(filepath.Join(opts.Home, ".pi"), AgentPi, opts.Now, opts.Home, func(path string, root string, now time.Time) []UsageEntry { return parseGenericJSONL(path, AgentPi) })...)
+	entries = append(entries, LoadCachedEntries(filepath.Join(opts.Home, ".omp"), AgentOMP, opts.Now, opts.Home, func(path string, root string, now time.Time) []UsageEntry { return parseGenericJSONL(path, AgentOMP) })...)
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Timestamp.Before(entries[j].Timestamp) })
+	return dedupe(entries)
+}
+
+func Render(entries []UsageEntry, pricing Pricing, views []Window, now time.Time) {
+	fmt.Println("usage-go cost summary")
+	for _, view := range views {
+		cutoff := cutoffFor(view, now)
+		filtered := filterSince(entries, cutoff)
+		total, groups := Aggregate(filtered, pricing)
+		fmt.Printf("\n%s (%s)\n", strings.ToUpper(string(view)), cutoff.Format("2006-01-02 15:04"))
+		fmt.Printf("Total: %s tokens  $%.4f  %d entries\n", formatInt(total.Tokens), total.Cost, total.Entries)
+		fmt.Println("Model                         Agent   Tokens        Cost      Entries")
+		fmt.Println("----------------------------- ------- ------------- --------- -------")
+		for _, row := range groups {
+			fmt.Printf("%-29.29s %-7s %13s $%8.4f %7d\n",
+				row.Key.Model,
+				row.Key.AgentCategory,
+				formatInt(row.Totals.Tokens),
+				row.Totals.Cost,
+				row.Totals.Entries,
+			)
+		}
+		if len(groups) == 0 {
+			fmt.Println("(no usage found)")
+		}
+	}
+}
+
+func cutoffFor(view Window, now time.Time) time.Time {
+	switch view {
+	case WindowDay:
+		return now.Add(-24 * time.Hour)
+	case WindowWeek:
+		return now.Add(-7 * 24 * time.Hour)
+	case WindowMonth:
+		return now.Add(-30 * 24 * time.Hour)
+	default:
+		return time.Time{}
+	}
+}
+
+func filterSince(entries []UsageEntry, cutoff time.Time) []UsageEntry {
+	out := make([]UsageEntry, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.Timestamp.Before(cutoff) {
+			out = append(out, entry)
+		}
+	}
+	return out
+}
+
+type GroupRow struct {
+	Key    GroupKey
+	Totals Totals
+}
+
+func Aggregate(entries []UsageEntry, pricing Pricing) (Totals, []GroupRow) {
+	byGroup := make(map[GroupKey]Totals)
+	var total Totals
+	for _, entry := range entries {
+		cost := CalculateCost(entry, pricing)
+		tokens := entry.TotalTokens()
+		total.Entries++
+		total.Tokens += tokens
+		total.Cost += cost
+		total.InputTokens += entry.InputTokens
+		total.OutputTokens += entry.OutputTokens
+		total.CacheCreationTokens += entry.CacheCreationTokens
+		total.CacheReadTokens += entry.CacheReadTokens
+
+		key := GroupKey{Model: normalizeUnknown(entry.Model), AgentCategory: entry.AgentCategory}
+		bucket := byGroup[key]
+		bucket.Entries++
+		bucket.Tokens += tokens
+		bucket.Cost += cost
+		bucket.InputTokens += entry.InputTokens
+		bucket.OutputTokens += entry.OutputTokens
+		bucket.CacheCreationTokens += entry.CacheCreationTokens
+		bucket.CacheReadTokens += entry.CacheReadTokens
+		byGroup[key] = bucket
+	}
+
+	rows := make([]GroupRow, 0, len(byGroup))
+	for key, totals := range byGroup {
+		rows = append(rows, GroupRow{Key: key, Totals: totals})
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].Totals.Cost != rows[j].Totals.Cost {
+			return rows[i].Totals.Cost > rows[j].Totals.Cost
+		}
+		if rows[i].Totals.Tokens != rows[j].Totals.Tokens {
+			return rows[i].Totals.Tokens > rows[j].Totals.Tokens
+		}
+		return fmt.Sprint(rows[i].Key) < fmt.Sprint(rows[j].Key)
+	})
+	return total, rows
+}
+
+func CalculateCost(entry UsageEntry, pricing Pricing) float64 {
+	if entry.CostUSD != nil {
+		return *entry.CostUSD
+	}
+	key, ok := ResolveModelKey(entry.Model, pricing)
+	if !ok {
+		return 0
+	}
+	price := pricing[key]
+	cacheCreation := price.CacheCreation
+	if cacheCreation == 0 {
+		cacheCreation = price.Input * 1.25
+	}
+	cacheRead := price.CacheRead
+	if cacheRead == 0 {
+		cacheRead = price.Input * 0.1
+	}
+	return float64(entry.InputTokens)*price.Input + float64(entry.OutputTokens)*price.Output + float64(entry.CacheCreationTokens)*cacheCreation + float64(entry.CacheReadTokens)*cacheRead
+}
+
+func LoadPricing(home string) Pricing {
+	pricing := fallbackPricing()
+	mergePricing(pricing, LoadLiteLLMPricing(home, http.DefaultClient))
+	return pricing
+}
+
+func LoadLiteLLMPricing(home string, client *http.Client) Pricing {
+	cachePath := filepath.Join(home, ".cache", "llm-usage", "litellm_pricing_cache.json")
+	if pricing := readFreshPricingCache(cachePath, time.Now()); len(pricing) > 0 {
+		return pricing
+	}
+	legacy := readPricingCache(filepath.Join(home, ".claude", "pricing_cache.json"))
+	pricing := fetchLiteLLMPricing(client)
+	if len(pricing) == 0 {
+		return legacy
+	}
+	writePricingCache(cachePath, pricing)
+	return pricing
+}
+
+func mergePricing(dst Pricing, src Pricing) {
+	for model, price := range src {
+		dst[model] = price
+	}
+}
+
+func readFreshPricingCache(cachePath string, now time.Time) Pricing {
+	info, err := os.Stat(cachePath)
+	if err != nil || now.Sub(info.ModTime()) > pricingCacheTTL {
+		return nil
+	}
+	return readPricingCache(cachePath)
+}
+
+func readPricingCache(cachePath string) Pricing {
+	file, err := os.Open(cachePath)
+	if err != nil {
+		return nil
+	}
+	defer file.Close()
+	var raw map[string]map[string]any
+	if json.NewDecoder(file).Decode(&raw) != nil {
+		return nil
+	}
+	return normalizePricing(raw)
+}
+
+func writePricingCache(cachePath string, pricing Pricing) {
+	if os.MkdirAll(filepath.Dir(cachePath), 0o755) != nil {
+		return
+	}
+	raw := make(map[string]map[string]float64, len(pricing))
+	for model, price := range pricing {
+		raw[model] = map[string]float64{
+			"input_cost_per_token":            price.Input,
+			"output_cost_per_token":           price.Output,
+			"cache_creation_input_token_cost": price.CacheCreation,
+			"cache_read_input_token_cost":     price.CacheRead,
+		}
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(cachePath), "litellm_pricing_*.tmp")
+	if err != nil {
+		return
+	}
+	tmpPath := tmp.Name()
+	ok := false
+	defer func() {
+		if !ok {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if json.NewEncoder(tmp).Encode(raw) != nil || tmp.Close() != nil {
+		return
+	}
+	if os.Rename(tmpPath, cachePath) != nil {
+		return
+	}
+	ok = true
+}
+
+func fetchLiteLLMPricing(client *http.Client) Pricing {
+	if client == nil {
+		client = http.DefaultClient
+	}
+	request, err := http.NewRequest(http.MethodGet, liteLLMPricingURL, nil)
+	if err != nil {
+		return nil
+	}
+	request.Header.Set("User-Agent", "usage-cli/0.1")
+	response, err := client.Do(request)
+	if err != nil {
+		return nil
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		_, _ = io.Copy(io.Discard, response.Body)
+		return nil
+	}
+	var raw map[string]map[string]any
+	if json.NewDecoder(response.Body).Decode(&raw) != nil {
+		return nil
+	}
+	return normalizePricing(raw)
+}
+
+func normalizePricing(raw map[string]map[string]any) Pricing {
+	pricing := make(Pricing, len(raw))
+	for model, info := range raw {
+		price := ModelPrice{
+			Input:         asFloat(info["input_cost_per_token"]),
+			Output:        asFloat(info["output_cost_per_token"]),
+			CacheCreation: asFloat(info["cache_creation_input_token_cost"]),
+			CacheRead:     asFloat(info["cache_read_input_token_cost"]),
+		}
+		if price.Input != 0 || price.Output != 0 || price.CacheCreation != 0 || price.CacheRead != 0 {
+			pricing[model] = price
+		}
+	}
+	return pricing
+}
+
+func fallbackPricing() Pricing {
+	return Pricing{
+		"claude-opus-4-6":   {Input: 5e-6, Output: 25e-6, CacheCreation: 6.25e-6, CacheRead: 0.5e-6},
+		"claude-opus-4-7":   {Input: 5e-6, Output: 25e-6, CacheCreation: 6.25e-6, CacheRead: 0.5e-6},
+		"claude-sonnet-4-6": {Input: 3e-6, Output: 15e-6, CacheCreation: 3.75e-6, CacheRead: 0.3e-6},
+		"gpt-5":             {Input: 1.25e-6, Output: 10e-6, CacheRead: 0.125e-6},
+		"gpt-5-codex":       {Input: 1.25e-6, Output: 10e-6, CacheRead: 0.125e-6},
+	}
+}
+
+func ResolveModelKey(model string, pricing Pricing) (string, bool) {
+	for _, candidate := range modelCandidates(model) {
+		if _, ok := pricing[candidate]; ok {
+			return candidate, true
+		}
+	}
+
+	best := ""
+	for _, candidate := range modelCandidates(model) {
+		for key := range pricing {
+			if modelKeyMatches(key, candidate) && betterDirectModelMatch(best, key) {
+				best = key
+			}
+		}
+	}
+	if best != "" {
+		return best, true
+	}
+	for _, alias := range modelAliases(model) {
+		if _, ok := pricing[alias]; ok {
+			return alias, true
+		}
+		for key := range pricing {
+			if modelKeyMatches(key, alias) && betterDirectModelMatch(best, key) {
+				best = key
+			}
+		}
+	}
+	if best != "" {
+		return best, true
+	}
+	for _, candidate := range modelCandidates(model) {
+		candidateBase := fuzzyModelBase(candidate)
+		for key := range pricing {
+			keyCandidate := NormalizeModelName(key)
+			keyBase := fuzzyModelBase(keyCandidate)
+			if candidateBase != "" && candidateBase == keyBase && betterModelMatch(best, key) {
+				best = key
+			}
+		}
+	}
+	if best == "" {
+		return "", false
+	}
+	return best, true
+}
+
+func modelCandidates(model string) []string {
+	seen := map[string]struct{}{}
+	candidates := make([]string, 0, 4)
+	add := func(value string) {
+		value = NormalizeModelName(value)
+		if value == "" {
+			return
+		}
+		if _, ok := seen[value]; ok {
+			return
+		}
+		seen[value] = struct{}{}
+		candidates = append(candidates, value)
+	}
+	add(model)
+	trimmed := strings.TrimSpace(model)
+	if idx := strings.LastIndexByte(trimmed, '/'); idx >= 0 && idx+1 < len(trimmed) {
+		add(trimmed[idx+1:])
+	}
+	if idx := strings.LastIndexByte(trimmed, '.'); idx >= 0 && idx+1 < len(trimmed) {
+		add(trimmed[idx+1:])
+	}
+	return candidates
+}
+
+func modelKeyMatches(key string, candidate string) bool {
+	if prefixModelMatch(key, candidate) || prefixModelMatch(candidate, key) {
+		return true
+	}
+	if idx := strings.LastIndexByte(key, '/'); idx >= 0 && idx+1 < len(key) {
+		suffix := key[idx+1:]
+		return prefixModelMatch(suffix, candidate) || prefixModelMatch(candidate, suffix)
+	}
+	return false
+}
+
+func prefixModelMatch(value string, prefix string) bool {
+	return strings.HasPrefix(value, prefix) && (len(value) == len(prefix) || value[len(prefix)] == '-')
+}
+
+func modelAliases(model string) []string {
+	normalized := NormalizeModelName(model)
+	switch normalized {
+	case "gpt-5.5-pro":
+		return []string{"gpt-5.5-pro", "azure/gpt-5.5-pro"}
+	case "gpt-5.3-codex":
+		return []string{"gpt-5.3-codex", "azure/gpt-5.3-codex", "github_copilot/gpt-5.3-codex", "chatgpt/gpt-5.3-codex"}
+	case "claude-haiku-4-5":
+		return []string{"claude-haiku-4-5", "claude-haiku-4-5-20251001", "anthropic.claude-haiku-4-5-20251001-v1:0"}
+	case "mimo-v2.5-pro":
+		return []string{"openrouter/xiaomi/mimo-v2.5-pro", "mimo-v2.5-pro"}
+	case "deepseek-v4-pro":
+		return []string{"deepseek/deepseek-v4-pro", "deepseek-v4-pro", "deepseek/deepseek-v3.2", "deepseek-v3.2"}
+	default:
+		return nil
+	}
+}
+
+func fuzzyModelBase(model string) string {
+	model = NormalizeModelName(model)
+	if idx := strings.LastIndexByte(model, '/'); idx >= 0 && idx+1 < len(model) {
+		model = model[idx+1:]
+	}
+	if idx := strings.LastIndexByte(model, '.'); idx >= 0 && idx+1 < len(model) && strings.HasPrefix(model[idx+1:], "claude-") {
+		model = model[idx+1:]
+	}
+	model = strings.ReplaceAll(model, ".", "-")
+	parts := strings.Split(model, "-")
+	for len(parts) > 0 {
+		last := parts[len(parts)-1]
+		if last == "" || isNumericModelPart(last) || isRegionModelPart(last) {
+			parts = parts[:len(parts)-1]
+			continue
+		}
+		break
+	}
+	return strings.Join(parts, "-")
+}
+
+func isNumericModelPart(value string) bool {
+	hasDigit := false
+	for _, r := range value {
+		if r >= '0' && r <= '9' {
+			hasDigit = true
+			continue
+		}
+		if r == '.' {
+			continue
+		}
+		return false
+	}
+	return hasDigit
+}
+
+func isRegionModelPart(value string) bool {
+	switch value {
+	case "sgp", "us", "eu", "jp", "kr", "cn", "global", "no", "co", "thinking":
+		return true
+	default:
+		return false
+	}
+}
+
+func betterModelMatch(current string, next string) bool {
+	return current == "" || len(next) > len(current) || (len(next) == len(current) && next < current)
+}
+
+func betterDirectModelMatch(current string, next string) bool {
+	return current == "" || len(next) < len(current) || (len(next) == len(current) && next < current)
+}
+
+func NormalizeModelName(model string) string {
+	normalized := strings.ToLower(strings.TrimSpace(model))
+	for _, prefix := range []string{"openai/", "anthropic/", "bedrock/", "azure/", "azure_openai/", "vertex_ai/", "vertex/", "google/", "xiaomi/"} {
+		if strings.HasPrefix(normalized, prefix) {
+			normalized = normalized[len(prefix):]
+			break
+		}
+	}
+	if idx := strings.LastIndexByte(normalized, '/'); idx >= 0 && idx+1 < len(normalized) {
+		suffix := normalized[idx+1:]
+		if strings.HasPrefix(suffix, "gpt-") || strings.HasPrefix(suffix, "claude-") || strings.HasPrefix(suffix, "mimo-") || strings.HasPrefix(suffix, "deepseek-") {
+			normalized = suffix
+		}
+	}
+	if idx := strings.LastIndexByte(normalized, '.'); idx >= 0 && idx+1 < len(normalized) && strings.HasPrefix(normalized[idx+1:], "claude-") {
+		normalized = normalized[idx+1:]
+	}
+	for _, layout := range dateSuffixes {
+		if t, err := time.Parse(layout, normalized[max(0, len(normalized)-len(layout)):]); err == nil && !t.IsZero() {
+			return normalized[:len(normalized)-len(layout)]
+		}
+	}
+	return normalized
+}
+
+type CacheEntry struct {
+	Path    string       `json:"path"`
+	ModTime int64        `json:"mod_time"`
+	Size    int64        `json:"size"`
+	Entries []UsageEntry `json:"entries"`
+}
+
+type TokenCache struct {
+	Files map[string]CacheEntry `json:"files"`
+}
+
+type EntryLoader func(string, string, time.Time) []UsageEntry
+
+func LoadCachedEntries(root string, category AgentCategory, now time.Time, home string, loader EntryLoader) []UsageEntry {
+	cachePath := tokenCachePath(home, category)
+	cache := readTokenCache(cachePath)
+	paths := jsonlPaths(root)
+	seenPaths := make(map[string]struct{}, len(paths))
+	entries := make([]UsageEntry, 0)
+	changed := false
+	for _, path := range paths {
+		seenPaths[path] = struct{}{}
+		info, err := os.Stat(path)
+		if err != nil {
+			continue
+		}
+		cached, ok := cache.Files[path]
+		if ok && cached.ModTime == info.ModTime().UnixNano() && cached.Size == info.Size() {
+			entries = append(entries, cached.Entries...)
+			continue
+		}
+		loaded := loader(path, root, now)
+		for i := range loaded {
+			loaded[i].SourceFile = path
+		}
+		cache.Files[path] = CacheEntry{Path: path, ModTime: info.ModTime().UnixNano(), Size: info.Size(), Entries: loaded}
+		entries = append(entries, loaded...)
+		changed = true
+	}
+	for path := range cache.Files {
+		if _, ok := seenPaths[path]; !ok {
+			delete(cache.Files, path)
+			changed = true
+		}
+	}
+	if changed {
+		writeTokenCache(cachePath, cache)
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Timestamp.Before(entries[j].Timestamp) })
+	return dedupe(entries)
+}
+
+func tokenCachePath(home string, category AgentCategory) string {
+	if cacheHome := os.Getenv("XDG_CACHE_HOME"); cacheHome != "" {
+		return filepath.Join(cacheHome, "llm-usage", string(category)+".json")
+	}
+	return filepath.Join(home, ".cache", "llm-usage", string(category)+".json")
+}
+
+func readTokenCache(path string) TokenCache {
+	file, err := os.Open(path)
+	if err != nil {
+		return TokenCache{Files: map[string]CacheEntry{}}
+	}
+	defer file.Close()
+	var cache TokenCache
+	if json.NewDecoder(file).Decode(&cache) != nil || cache.Files == nil {
+		return TokenCache{Files: map[string]CacheEntry{}}
+	}
+	return cache
+}
+
+func writeTokenCache(path string, cache TokenCache) {
+	if os.MkdirAll(filepath.Dir(path), 0o755) != nil {
+		return
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), "entries_*.tmp")
+	if err != nil {
+		return
+	}
+	tmpPath := tmp.Name()
+	ok := false
+	defer func() {
+		if !ok {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if json.NewEncoder(tmp).Encode(cache) != nil || tmp.Close() != nil {
+		return
+	}
+	if os.Rename(tmpPath, path) != nil {
+		return
+	}
+	ok = true
+}
+
+func jsonlPaths(root string) []string {
+	paths := make([]string, 0)
+	walkJSONL(root, func(path string, d fs.DirEntry) {
+		paths = append(paths, path)
+	})
+	sort.Strings(paths)
+	return paths
+}
+
+func LoadClaudeEntries(projectsDir string, now time.Time) []UsageEntry {
+	var entries []UsageEntry
+	walkJSONL(projectsDir, func(path string, d fs.DirEntry) {
+		entries = append(entries, LoadClaudeFile(path, projectsDir)...)
+	})
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Timestamp.Before(entries[j].Timestamp) })
+	return entries
+}
+
+func LoadClaudeFile(path string, projectsDir string) []UsageEntry {
+	entries := make([]UsageEntry, 0)
+	project := projectFromClaudePath(projectsDir, path)
+	loadJSONLines(path, func(data map[string]any) {
+		entry, ok := parseClaudeLine(data, project)
+		if ok {
+			entries = append(entries, entry)
+		}
+	})
+	return entries
+}
+
+func parseClaudeLine(data map[string]any, project string) (UsageEntry, bool) {
+	if asString(data["type"]) != "assistant" {
+		return UsageEntry{}, false
+	}
+	message := asMap(data["message"])
+	usage := asMap(message["usage"])
+	if usage == nil {
+		return UsageEntry{}, false
+	}
+	timestamp, ok := parseTimestamp(data["timestamp"])
+	if !ok {
+		return UsageEntry{}, false
+	}
+	entry := UsageEntry{
+		Timestamp:           timestamp,
+		SessionID:           asString(data["sessionId"]),
+		MessageID:           asString(message["id"]),
+		RequestID:           asString(data["requestId"]),
+		Model:               defaultString(asString(message["model"]), "unknown"),
+		InputTokens:         asInt(usage["input_tokens"]),
+		OutputTokens:        asInt(usage["output_tokens"]),
+		CacheCreationTokens: asInt(usage["cache_creation_input_tokens"]),
+		CacheReadTokens:     asInt(usage["cache_read_input_tokens"]),
+		CostUSD:             asOptionalFloat(data["costUSD"]),
+		Project:             project,
+		AgentCategory:       AgentClaude,
+	}
+	if cwd := asString(data["cwd"]); cwd != "" {
+		entry.Project = filepath.Base(filepath.Clean(os.ExpandEnv(cwd)))
+	}
+	return entry, entry.TotalTokens() > 0
+}
+
+func LoadCodexEntries(root string, now time.Time) []UsageEntry {
+	sessionsDir := filepath.Join(root, "sessions")
+	var entries []UsageEntry
+	walkJSONL(sessionsDir, func(path string, d fs.DirEntry) {
+		entries = append(entries, LoadCodexFile(path, root)...)
+	})
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Timestamp.Before(entries[j].Timestamp) })
+	return entries
+}
+
+func LoadCodexFile(path string, root string) []UsageEntry {
+	models := loadCodexThreadModels(filepath.Join(root, "state_5.sqlite"))
+	if entry, ok := parseCodexSession(path, models); ok {
+		return []UsageEntry{entry}
+	}
+	return nil
+}
+
+func parseCodexSession(path string, models map[string]string) (UsageEntry, bool) {
+	var sessionID, sessionTimestamp, project, lastTimestamp string
+	var lastUsage map[string]any
+	loadJSONLines(path, func(data map[string]any) {
+		switch asString(data["type"]) {
+		case "session_meta":
+			payload := asMap(data["payload"])
+			sessionID = asString(payload["id"])
+			sessionTimestamp = asString(payload["timestamp"])
+			project = projectFromCWD(asString(payload["cwd"]))
+		case "event_msg":
+			payload := asMap(data["payload"])
+			if asString(payload["type"]) != "token_count" {
+				return
+			}
+			usage := asMap(asMap(payload["info"])["total_token_usage"])
+			if usage != nil {
+				lastUsage = usage
+				lastTimestamp = asString(data["timestamp"])
+			}
+		}
+	})
+	if sessionID == "" || lastUsage == nil {
+		return UsageEntry{}, false
+	}
+	timestamp, ok := parseTimestamp(lastTimestamp)
+	if !ok {
+		timestamp, ok = parseTimestamp(sessionTimestamp)
+	}
+	if !ok {
+		return UsageEntry{}, false
+	}
+	cached := asInt(lastUsage["cached_input_tokens"])
+	input := asInt(lastUsage["input_tokens"]) - cached
+	if input < 0 {
+		input = 0
+	}
+	output := asInt(lastUsage["output_tokens"]) + asInt(lastUsage["reasoning_output_tokens"])
+	model := defaultString(models[sessionID], "unknown")
+	return UsageEntry{Timestamp: timestamp, SessionID: sessionID, MessageID: sessionID, Model: model, InputTokens: input, OutputTokens: output, CacheReadTokens: cached, Project: defaultString(project, "unknown"), AgentCategory: AgentCodex}, input+output > 0
+}
+
+func LoadAssistantEntries(root string, category AgentCategory, now time.Time) []UsageEntry {
+	var entries []UsageEntry
+	for _, dir := range []string{"projects", "sessions", "history"} {
+		walkJSONL(filepath.Join(root, dir), func(path string, d fs.DirEntry) {
+			entries = append(entries, parseGenericJSONL(path, category)...)
+		})
+	}
+	walkJSONL(root, func(path string, d fs.DirEntry) {
+		entries = append(entries, parseGenericJSONL(path, category)...)
+	})
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Timestamp.Before(entries[j].Timestamp) })
+	return dedupe(entries)
+}
+
+func parseGenericJSONL(path string, category AgentCategory) []UsageEntry {
+	var entries []UsageEntry
+	loadJSONLines(path, func(data map[string]any) {
+		if entry, ok := parseGenericLine(data, category); ok {
+			entries = append(entries, entry)
+		}
+	})
+	return entries
+}
+
+func parseGenericLine(data map[string]any, category AgentCategory) (UsageEntry, bool) {
+	timestamp, ok := firstTimestamp(data, "timestamp", "created_at", "createdAt", "time")
+	if !ok {
+		if ts := asFloat(data["created"]); ts > 0 {
+			timestamp = time.Unix(int64(ts), 0).UTC()
+			ok = true
+		}
+	}
+	if !ok {
+		return UsageEntry{}, false
+	}
+	usage := firstMap(data, "usage", "token_usage", "total_token_usage")
+	if usage == nil {
+		payload := asMap(data["payload"])
+		usage = firstMap(payload, "usage", "token_usage", "total_token_usage")
+		if usage == nil {
+			info := asMap(payload["info"])
+			usage = firstMap(info, "usage", "token_usage", "total_token_usage")
+		}
+	}
+	if usage == nil {
+		return UsageEntry{}, false
+	}
+	model := firstString(data, "model", "model_name", "modelName")
+	if model == "" {
+		message := asMap(data["message"])
+		model = firstString(message, "model", "model_name", "modelName")
+	}
+	if model == "" {
+		model = "unknown"
+	}
+	category = detectAgentCategory(data, category)
+	cached := asInt(firstValue(usage, "cached_input_tokens", "cache_read_input_tokens"))
+	input := asInt(firstValue(usage, "input_tokens", "prompt_tokens"))
+	if asInt(usage["cached_input_tokens"]) > 0 {
+		input -= cached
+		if input < 0 {
+			input = 0
+		}
+	}
+	output := asInt(firstValue(usage, "output_tokens", "completion_tokens")) + asInt(usage["reasoning_output_tokens"])
+	entry := UsageEntry{Timestamp: timestamp, SessionID: firstString(data, "sessionId", "session_id", "conversation_id", "thread_id"), MessageID: firstString(data, "messageId", "message_id", "id"), RequestID: firstString(data, "requestId", "request_id"), Model: model, InputTokens: input, OutputTokens: output, CacheCreationTokens: asInt(usage["cache_creation_input_tokens"]), CacheReadTokens: cached, CostUSD: asOptionalFloat(firstValue(data, "costUSD", "cost_usd", "cost")), Project: projectFromCWD(firstString(data, "cwd", "workspace", "project")), AgentCategory: category}
+	return entry, entry.TotalTokens() > 0 || entry.CostUSD != nil
+}
+
+func detectAgentCategory(data map[string]any, fallback AgentCategory) AgentCategory {
+	for _, key := range []string{"agent_category", "agentCategory", "agent", "source", "client"} {
+		value := strings.ToLower(strings.TrimSpace(asString(data[key])))
+		switch value {
+		case "pi":
+			return AgentPi
+		case "omp":
+			return AgentOMP
+		case "claude":
+			return AgentClaude
+		case "codex":
+			return AgentCodex
+		}
+	}
+	return fallback
+}
+
+func loadCodexThreadModels(dbPath string) map[string]string {
+	models := map[string]string{}
+	if _, err := os.Stat(dbPath); err != nil {
+		return models
+	}
+	db, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro")
+	if err != nil {
+		return models
+	}
+	defer db.Close()
+	rows, err := db.Query("SELECT id, model FROM threads WHERE model IS NOT NULL")
+	if err != nil {
+		return models
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, model string
+		if rows.Scan(&id, &model) == nil && id != "" && model != "" {
+			models[id] = model
+		}
+	}
+	return models
+}
+
+func dedupe(entries []UsageEntry) []UsageEntry {
+	seen := make(map[string]struct{}, len(entries))
+	out := entries[:0]
+	for _, entry := range entries {
+		key := dedupKey(entry)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, entry)
+	}
+	return out
+}
+
+func dedupKey(entry UsageEntry) string {
+	if entry.MessageID != "" || entry.RequestID != "" {
+		return fmt.Sprintf("%s:message:%s:%s", entry.AgentCategory, entry.MessageID, entry.RequestID)
+	}
+	return fmt.Sprintf("%s:entry:%s:%s:%s:%d:%d:%d:%d", entry.AgentCategory, entry.SessionID, entry.Timestamp.Format(time.RFC3339Nano), entry.Model, entry.InputTokens, entry.OutputTokens, entry.CacheCreationTokens, entry.CacheReadTokens)
+}
+
+func walkJSONL(root string, fn func(string, fs.DirEntry)) {
+	info, err := os.Stat(root)
+	if err != nil {
+		return
+	}
+	if !info.IsDir() {
+		if strings.HasSuffix(root, ".jsonl") {
+			fn(root, nil)
+		}
+		return
+	}
+	filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".jsonl") {
+			return nil
+		}
+		fn(path, d)
+		return nil
+	})
+}
+
+func loadJSONLines(path string, fn func(map[string]any)) {
+	file, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	for scanner.Scan() {
+		var data map[string]any
+		if json.Unmarshal(scanner.Bytes(), &data) == nil {
+			fn(data)
+		}
+	}
+}
+
+func parseTimestamp(value any) (time.Time, bool) {
+	s, ok := value.(string)
+	if !ok || s == "" {
+		return time.Time{}, false
+	}
+	layouts := []string{time.RFC3339Nano, "2006-01-02T15:04:05", "2006-01-02 15:04:05"}
+	for _, layout := range layouts {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t.UTC(), true
+		}
+	}
+	return time.Time{}, false
+}
+
+func firstTimestamp(data map[string]any, keys ...string) (time.Time, bool) {
+	for _, key := range keys {
+		if t, ok := parseTimestamp(data[key]); ok {
+			return t, true
+		}
+	}
+	return time.Time{}, false
+}
+
+func projectFromClaudePath(projectsDir, jsonlPath string) string {
+	rel, err := filepath.Rel(projectsDir, jsonlPath)
+	if err != nil {
+		return "unknown"
+	}
+	parts := strings.Split(rel, string(os.PathSeparator))
+	if len(parts) == 0 || parts[0] == "." {
+		return "unknown"
+	}
+	decoded := strings.Trim(strings.ReplaceAll(parts[0], "-", string(os.PathSeparator)), string(os.PathSeparator))
+	base := filepath.Base(decoded)
+	if base == "." || base == string(os.PathSeparator) || base == "" {
+		return "unknown"
+	}
+	return base
+}
+
+func projectFromCWD(cwd string) string {
+	if cwd == "" {
+		return "unknown"
+	}
+	clean := filepath.Clean(os.ExpandEnv(cwd))
+	base := filepath.Base(clean)
+	if base == "." || base == string(os.PathSeparator) || base == "" {
+		return "unknown"
+	}
+	return base
+}
+
+func asMap(value any) map[string]any {
+	m, _ := value.(map[string]any)
+	return m
+}
+
+func firstMap(data map[string]any, keys ...string) map[string]any {
+	if data == nil {
+		return nil
+	}
+	for _, key := range keys {
+		if m := asMap(data[key]); m != nil {
+			return m
+		}
+	}
+	return nil
+}
+
+func firstValue(data map[string]any, keys ...string) any {
+	for _, key := range keys {
+		if value, ok := data[key]; ok {
+			return value
+		}
+	}
+	return nil
+}
+
+func firstString(data map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if s := asString(data[key]); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+func asString(value any) string {
+	s, _ := value.(string)
+	return s
+}
+
+func defaultString(value, fallback string) string {
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
+func normalizeUnknown(value string) string {
+	if value == "" {
+		return "unknown"
+	}
+	return value
+}
+
+func asInt(value any) int64 {
+	switch v := value.(type) {
+	case float64:
+		if !math.IsNaN(v) && !math.IsInf(v, 0) && v > 0 {
+			return int64(v)
+		}
+	case int64:
+		if v > 0 {
+			return v
+		}
+	case int:
+		if v > 0 {
+			return int64(v)
+		}
+	}
+	return 0
+}
+
+func asFloat(value any) float64 {
+	switch v := value.(type) {
+	case float64:
+		if !math.IsNaN(v) && !math.IsInf(v, 0) {
+			return v
+		}
+	case int64:
+		return float64(v)
+	case int:
+		return float64(v)
+	}
+	return 0
+}
+
+func asOptionalFloat(value any) *float64 {
+	v := asFloat(value)
+	if v == 0 {
+		return nil
+	}
+	return &v
+}
+
+func formatInt(n int64) string {
+	s := fmt.Sprintf("%d", n)
+	if len(s) <= 3 {
+		return s
+	}
+	var b strings.Builder
+	rem := len(s) % 3
+	if rem == 0 {
+		rem = 3
+	}
+	b.WriteString(s[:rem])
+	for i := rem; i < len(s); i += 3 {
+		b.WriteByte(',')
+		b.WriteString(s[i : i+3])
+	}
+	return b.String()
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
