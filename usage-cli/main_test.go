@@ -152,17 +152,20 @@ func TestParseGenericLineReadsNestedMessageUsage(t *testing.T) {
 func TestAggregateGroupsByModelAndAgentCategory(t *testing.T) {
 	pricing := Pricing{"gpt-5": {Input: 1, Output: 2, CacheRead: 0.5}}
 	entries := []UsageEntry{
-		{Timestamp: time.Now(), Model: "openai/gpt-5", AgentCategory: AgentCodex, InputTokens: 1, OutputTokens: 2, CacheReadTokens: 4},
-		{Timestamp: time.Now(), Model: "openai/gpt-5", AgentCategory: AgentOMP, InputTokens: 3},
+		{Timestamp: time.Now(), Model: "openai/gpt-5", Project: "alpha", AgentCategory: AgentCodex, InputTokens: 1, OutputTokens: 2, CacheReadTokens: 4},
+		{Timestamp: time.Now(), Model: "openai/gpt-5", Project: "beta", AgentCategory: AgentOMP, InputTokens: 3},
 	}
 
-	total, rows := Aggregate(entries, pricing)
+	total, modelRows, projectRows := Aggregate(entries, pricing)
 
 	if total.Tokens != 10 || total.Cost != 10 {
 		t.Fatalf("unexpected total: %#v", total)
 	}
-	if len(rows) != 2 {
-		t.Fatalf("expected separate agent_category groups, got %#v", rows)
+	if len(modelRows) != 2 {
+		t.Fatalf("expected separate agent_category groups, got %#v", modelRows)
+	}
+	if len(projectRows) != 2 || projectRows[0].Key.Project == projectRows[1].Key.Project {
+		t.Fatalf("expected separate project groups, got %#v", projectRows)
 	}
 }
 

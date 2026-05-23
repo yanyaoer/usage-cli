@@ -80,6 +80,11 @@ type GroupKey struct {
 	AgentCategory AgentCategory
 }
 
+type ProjectKey struct {
+	Project       string
+	AgentCategory AgentCategory
+}
+
 type Options struct {
 	Home string
 	Now  time.Time
@@ -139,12 +144,12 @@ func Render(entries []UsageEntry, pricing Pricing, views []Window, now time.Time
 	for _, view := range views {
 		cutoff := cutoffFor(view, now)
 		filtered := filterSince(entries, cutoff)
-		total, groups := Aggregate(filtered, pricing)
+		total, modelGroups, projectGroups := Aggregate(filtered, pricing)
 		fmt.Printf("\n%s (%s)\n", strings.ToUpper(string(view)), cutoff.Format("2006-01-02 15:04"))
 		fmt.Printf("Total: %s tokens  $%.4f  %d entries\n", formatInt(total.Tokens), total.Cost, total.Entries)
 		fmt.Println("Model                         Agent   Tokens        Cost      Entries")
 		fmt.Println("----------------------------- ------- ------------- --------- -------")
-		for _, row := range groups {
+		for _, row := range modelGroups {
 			fmt.Printf("%-29.29s %-7s %13s $%8.4f %7d\n",
 				row.Key.Model,
 				row.Key.AgentCategory,
@@ -153,7 +158,22 @@ func Render(entries []UsageEntry, pricing Pricing, views []Window, now time.Time
 				row.Totals.Entries,
 			)
 		}
-		if len(groups) == 0 {
+		if len(modelGroups) == 0 {
+			fmt.Println("(no usage found)")
+		}
+		fmt.Println("")
+		fmt.Println("Project                       Agent   Tokens        Cost      Entries")
+		fmt.Println("----------------------------- ------- ------------- --------- -------")
+		for _, row := range projectGroups {
+			fmt.Printf("%-29.29s %-7s %13s $%8.4f %7d\n",
+				row.Key.Project,
+				row.Key.AgentCategory,
+				formatInt(row.Totals.Tokens),
+				row.Totals.Cost,
+				row.Totals.Entries,
+			)
+		}
+		if len(projectGroups) == 0 {
 			fmt.Println("(no usage found)")
 		}
 	}
@@ -187,8 +207,14 @@ type GroupRow struct {
 	Totals Totals
 }
 
-func Aggregate(entries []UsageEntry, pricing Pricing) (Totals, []GroupRow) {
-	byGroup := make(map[GroupKey]Totals)
+type ProjectGroupRow struct {
+	Key    ProjectKey
+	Totals Totals
+}
+
+func Aggregate(entries []UsageEntry, pricing Pricing) (Totals, []GroupRow, []ProjectGroupRow) {
+	byModel := make(map[GroupKey]Totals)
+	byProject := make(map[ProjectKey]Totals)
 	var total Totals
 	for _, entry := range entries {
 		cost := CalculateCost(entry, pricing)
@@ -201,22 +227,42 @@ func Aggregate(entries []UsageEntry, pricing Pricing) (Totals, []GroupRow) {
 		total.CacheCreationTokens += entry.CacheCreationTokens
 		total.CacheReadTokens += entry.CacheReadTokens
 
-		key := GroupKey{Model: normalizeUnknown(entry.Model), AgentCategory: entry.AgentCategory}
-		bucket := byGroup[key]
-		bucket.Entries++
-		bucket.Tokens += tokens
-		bucket.Cost += cost
-		bucket.InputTokens += entry.InputTokens
-		bucket.OutputTokens += entry.OutputTokens
-		bucket.CacheCreationTokens += entry.CacheCreationTokens
-		bucket.CacheReadTokens += entry.CacheReadTokens
-		byGroup[key] = bucket
+		modelKey := GroupKey{Model: normalizeUnknown(entry.Model), AgentCategory: entry.AgentCategory}
+		modelBucket := byModel[modelKey]
+		addTotals(&modelBucket, entry, tokens, cost)
+		byModel[modelKey] = modelBucket
+
+		projectKey := ProjectKey{Project: normalizeUnknown(entry.Project), AgentCategory: entry.AgentCategory}
+		projectBucket := byProject[projectKey]
+		addTotals(&projectBucket, entry, tokens, cost)
+		byProject[projectKey] = projectBucket
 	}
 
-	rows := make([]GroupRow, 0, len(byGroup))
-	for key, totals := range byGroup {
-		rows = append(rows, GroupRow{Key: key, Totals: totals})
+	modelRows := make([]GroupRow, 0, len(byModel))
+	for key, totals := range byModel {
+		modelRows = append(modelRows, GroupRow{Key: key, Totals: totals})
 	}
+	sortGroupRows(modelRows)
+
+	projectRows := make([]ProjectGroupRow, 0, len(byProject))
+	for key, totals := range byProject {
+		projectRows = append(projectRows, ProjectGroupRow{Key: key, Totals: totals})
+	}
+	sortProjectRows(projectRows)
+	return total, modelRows, projectRows
+}
+
+func addTotals(bucket *Totals, entry UsageEntry, tokens int64, cost float64) {
+	bucket.Entries++
+	bucket.Tokens += tokens
+	bucket.Cost += cost
+	bucket.InputTokens += entry.InputTokens
+	bucket.OutputTokens += entry.OutputTokens
+	bucket.CacheCreationTokens += entry.CacheCreationTokens
+	bucket.CacheReadTokens += entry.CacheReadTokens
+}
+
+func sortGroupRows(rows []GroupRow) {
 	sort.Slice(rows, func(i, j int) bool {
 		if rows[i].Totals.Cost != rows[j].Totals.Cost {
 			return rows[i].Totals.Cost > rows[j].Totals.Cost
@@ -226,7 +272,18 @@ func Aggregate(entries []UsageEntry, pricing Pricing) (Totals, []GroupRow) {
 		}
 		return fmt.Sprint(rows[i].Key) < fmt.Sprint(rows[j].Key)
 	})
-	return total, rows
+}
+
+func sortProjectRows(rows []ProjectGroupRow) {
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].Totals.Cost != rows[j].Totals.Cost {
+			return rows[i].Totals.Cost > rows[j].Totals.Cost
+		}
+		if rows[i].Totals.Tokens != rows[j].Totals.Tokens {
+			return rows[i].Totals.Tokens > rows[j].Totals.Tokens
+		}
+		return fmt.Sprint(rows[i].Key) < fmt.Sprint(rows[j].Key)
+	})
 }
 
 func CalculateCost(entry UsageEntry, pricing Pricing) float64 {
@@ -851,7 +908,7 @@ func parseGenericLine(data map[string]any, category AgentCategory) (UsageEntry, 
 		}
 	}
 	output := asInt(firstValue(usage, "output_tokens", "completion_tokens", "output")) + asInt(usage["reasoning_output_tokens"])
-	entry := UsageEntry{Timestamp: timestamp, SessionID: firstString(data, "sessionId", "session_id", "conversation_id", "thread_id"), MessageID: firstString(data, "messageId", "message_id", "id"), RequestID: firstString(data, "requestId", "request_id"), Model: model, InputTokens: input, OutputTokens: output, CacheCreationTokens: asInt(firstValue(usage, "cache_creation_input_tokens", "cacheWrite")), CacheReadTokens: cached, CostUSD: genericCost(data, usage), Project: projectFromCWD(firstString(data, "cwd", "workspace", "project")), AgentCategory: category}
+	entry := UsageEntry{Timestamp: timestamp, SessionID: firstString(data, "sessionId", "session_id", "conversation_id", "thread_id"), MessageID: firstString(data, "messageId", "message_id", "id"), RequestID: firstString(data, "requestId", "request_id"), Model: model, InputTokens: input, OutputTokens: output, CacheCreationTokens: asInt(firstValue(usage, "cache_creation_input_tokens", "cacheWrite")), CacheReadTokens: cached, CostUSD: genericCost(data, usage), Project: projectFromCWD(firstString(data, "cwd", "workspace", "project", "project_path", "projectPath")), AgentCategory: category}
 	return entry, entry.TotalTokens() > 0 || entry.CostUSD != nil
 }
 
