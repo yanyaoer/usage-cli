@@ -303,8 +303,11 @@ func TestLoadCachedEntriesWritesAndReusesCache(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("expected one loader call, got %d", calls)
 	}
-	if len(first) != 1 || len(second) != 1 || second[0].InputTokens != 1 || second[0].SourceFile != path {
+	if len(first.Entries) != 1 || len(second.Entries) != 1 || second.Entries[0].InputTokens != 1 || second.Entries[0].SourceFile != path {
 		t.Fatalf("unexpected cached entries first=%#v second=%#v", first, second)
+	}
+	if first.Cache.Misses != 1 || first.Cache.Hits != 0 || second.Cache.Hits != 1 || second.Cache.Misses != 0 {
+		t.Fatalf("unexpected cache stats first=%#v second=%#v", first.Cache, second.Cache)
 	}
 	if _, err := os.Stat(filepath.Join(home, ".cache", "llm-usage", "omp.json")); err != nil {
 		t.Fatalf("expected cache file: %v", err)
@@ -321,12 +324,12 @@ func TestLoadCachedEntriesInvalidatesChangedFile(t *testing.T) {
 	})
 
 	writeJSONL(t, path, map[string]any{"timestamp": "2026-05-23T00:00:00Z", "model": "gpt-5", "usage": map[string]any{"input_tokens": 3}})
-	entries := LoadCachedEntries(root, AgentOMP, time.Now(), home, func(path string, root string, now time.Time) []UsageEntry {
+	result := LoadCachedEntries(root, AgentOMP, time.Now(), home, func(path string, root string, now time.Time) []UsageEntry {
 		return parseGenericJSONL(path, AgentOMP)
 	})
 
-	if len(entries) != 1 || entries[0].InputTokens != 3 {
-		t.Fatalf("expected changed cache entry, got %#v", entries)
+	if len(result.Entries) != 1 || result.Entries[0].InputTokens != 3 || result.Cache.Stale != 1 {
+		t.Fatalf("expected changed cache entry, got %#v stats=%#v", result.Entries, result.Cache)
 	}
 }
 

@@ -90,6 +90,27 @@ type Options struct {
 	Now  time.Time
 }
 
+type CacheStats struct {
+	FilesTotal int
+	Hits       int
+	Misses     int
+	Stale      int
+	Removed    int
+}
+
+func (stats *CacheStats) Add(other CacheStats) {
+	stats.FilesTotal += other.FilesTotal
+	stats.Hits += other.Hits
+	stats.Misses += other.Misses
+	stats.Stale += other.Stale
+	stats.Removed += other.Removed
+}
+
+type LoadResult struct {
+	Entries []UsageEntry
+	Cache   CacheStats
+}
+
 var dateSuffixes = []string{"-20060102", "-2006-01-02"}
 
 const liteLLMPricingURL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
@@ -110,7 +131,7 @@ func main() {
 		}
 	}
 
-	entries := LoadAllEntries(Options{Home: home, Now: time.Now()})
+	result := LoadAllEntries(Options{Home: home, Now: time.Now()})
 	pricing := LoadPricing(home)
 
 	views := []Window{WindowDay, WindowWeek, WindowMonth}
@@ -123,24 +144,30 @@ func main() {
 		views = []Window{view}
 	}
 
-	Render(entries, pricing, views, time.Now())
+	Render(result.Entries, pricing, views, time.Now(), result.Cache)
 }
 
-func LoadAllEntries(opts Options) []UsageEntry {
+func LoadAllEntries(opts Options) LoadResult {
 	if opts.Now.IsZero() {
 		opts.Now = time.Now()
 	}
-	var entries []UsageEntry
-	entries = append(entries, LoadCachedEntries(filepath.Join(opts.Home, ".claude", "projects"), AgentClaude, opts.Now, opts.Home, func(path string, root string, now time.Time) []UsageEntry { return LoadClaudeFile(path, root) })...)
-	entries = append(entries, LoadCachedEntries(filepath.Join(opts.Home, ".codex"), AgentCodex, opts.Now, opts.Home, func(path string, root string, now time.Time) []UsageEntry { return LoadCodexFile(path, root) })...)
-	entries = append(entries, LoadCachedEntries(filepath.Join(opts.Home, ".pi"), AgentPi, opts.Now, opts.Home, func(path string, root string, now time.Time) []UsageEntry { return parseGenericJSONL(path, AgentPi) })...)
-	entries = append(entries, LoadCachedEntries(filepath.Join(opts.Home, ".omp"), AgentOMP, opts.Now, opts.Home, func(path string, root string, now time.Time) []UsageEntry { return parseGenericJSONL(path, AgentOMP) })...)
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Timestamp.Before(entries[j].Timestamp) })
-	return dedupe(entries)
+	var result LoadResult
+	appendResult := func(next LoadResult) {
+		result.Entries = append(result.Entries, next.Entries...)
+		result.Cache.Add(next.Cache)
+	}
+	appendResult(LoadCachedEntries(filepath.Join(opts.Home, ".claude", "projects"), AgentClaude, opts.Now, opts.Home, func(path string, root string, now time.Time) []UsageEntry { return LoadClaudeFile(path, root) }))
+	appendResult(LoadCachedEntries(filepath.Join(opts.Home, ".codex"), AgentCodex, opts.Now, opts.Home, func(path string, root string, now time.Time) []UsageEntry { return LoadCodexFile(path, root) }))
+	appendResult(LoadCachedEntries(filepath.Join(opts.Home, ".pi"), AgentPi, opts.Now, opts.Home, func(path string, root string, now time.Time) []UsageEntry { return parseGenericJSONL(path, AgentPi) }))
+	appendResult(LoadCachedEntries(filepath.Join(opts.Home, ".omp"), AgentOMP, opts.Now, opts.Home, func(path string, root string, now time.Time) []UsageEntry { return parseGenericJSONL(path, AgentOMP) }))
+	sort.Slice(result.Entries, func(i, j int) bool { return result.Entries[i].Timestamp.Before(result.Entries[j].Timestamp) })
+	result.Entries = dedupe(result.Entries)
+	return result
 }
 
-func Render(entries []UsageEntry, pricing Pricing, views []Window, now time.Time) {
+func Render(entries []UsageEntry, pricing Pricing, views []Window, now time.Time, cacheStats CacheStats) {
 	fmt.Println("usage-go cost summary")
+	fmt.Printf("Cache: %d files, %d hits, %d misses, %d stale, %d removed\n", cacheStats.FilesTotal, cacheStats.Hits, cacheStats.Misses, cacheStats.Stale, cacheStats.Removed)
 	for _, view := range views {
 		cutoff := cutoffFor(view, now)
 		filtered := filterSince(entries, cutoff)
@@ -633,11 +660,13 @@ type TokenCache struct {
 
 type EntryLoader func(string, string, time.Time) []UsageEntry
 
-func LoadCachedEntries(root string, category AgentCategory, now time.Time, home string, loader EntryLoader) []UsageEntry {
+func LoadCachedEntries(root string, category AgentCategory, now time.Time, home string, loader EntryLoader) LoadResult {
 	cachePath := tokenCachePath(home, category)
 	cache := readTokenCache(cachePath)
 	paths := jsonlPaths(root)
 	seenPaths := make(map[string]struct{}, len(paths))
+	var result LoadResult
+	result.Cache.FilesTotal = len(paths)
 	entries := make([]UsageEntry, 0)
 	changed := false
 	for _, path := range paths {
@@ -648,8 +677,14 @@ func LoadCachedEntries(root string, category AgentCategory, now time.Time, home 
 		}
 		cached, ok := cache.Files[path]
 		if ok && cached.ModTime == info.ModTime().UnixNano() && cached.Size == info.Size() {
+			result.Cache.Hits++
 			entries = append(entries, cached.Entries...)
 			continue
+		}
+		if ok {
+			result.Cache.Stale++
+		} else {
+			result.Cache.Misses++
 		}
 		loaded := loader(path, root, now)
 		for i := range loaded {
@@ -662,6 +697,7 @@ func LoadCachedEntries(root string, category AgentCategory, now time.Time, home 
 	for path := range cache.Files {
 		if _, ok := seenPaths[path]; !ok {
 			delete(cache.Files, path)
+			result.Cache.Removed++
 			changed = true
 		}
 	}
@@ -669,7 +705,8 @@ func LoadCachedEntries(root string, category AgentCategory, now time.Time, home 
 		writeTokenCache(cachePath, cache)
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Timestamp.Before(entries[j].Timestamp) })
-	return dedupe(entries)
+	result.Entries = dedupe(entries)
+	return result
 }
 
 func tokenCachePath(home string, category AgentCategory) string {
