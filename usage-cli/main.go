@@ -66,13 +66,15 @@ type ModelPrice struct {
 }
 
 type Totals struct {
-	Entries             int64
-	Tokens              int64
-	Cost                float64
-	InputTokens         int64
-	OutputTokens        int64
-	CacheCreationTokens int64
-	CacheReadTokens     int64
+	Entries               int64
+	Tokens                int64
+	Cost                  float64
+	InputTokens           int64
+	OutputTokens          int64
+	CacheCreationTokens   int64
+	CacheReadTokens       int64
+	PromptCacheHitTokens  int64
+	PromptCacheMissTokens int64
 }
 
 type GroupKey struct {
@@ -167,13 +169,14 @@ func LoadAllEntries(opts Options) LoadResult {
 
 func Render(entries []UsageEntry, pricing Pricing, views []Window, now time.Time, cacheStats CacheStats) {
 	fmt.Println("usage-go cost summary")
-	fmt.Printf("Cache: %d files, %d hits, %d misses, %d stale, %d removed\n", cacheStats.FilesTotal, cacheStats.Hits, cacheStats.Misses, cacheStats.Stale, cacheStats.Removed)
+	fmt.Printf("Entry cache: %d files, %d hits, %d misses, %d stale, %d removed\n", cacheStats.FilesTotal, cacheStats.Hits, cacheStats.Misses, cacheStats.Stale, cacheStats.Removed)
 	for _, view := range views {
 		cutoff := cutoffFor(view, now)
 		filtered := filterSince(entries, cutoff)
 		total, modelGroups, projectGroups := Aggregate(filtered, pricing)
 		fmt.Printf("\n%s (%s)\n", strings.ToUpper(string(view)), cutoff.Format("2006-01-02 15:04"))
 		fmt.Printf("Total: %s tokens  $%.4f  %d entries\n", formatInt(total.Tokens), total.Cost, total.Entries)
+		fmt.Printf("Prompt cache: hit %s tokens, miss %s tokens\n", formatInt(total.PromptCacheHitTokens), formatInt(total.PromptCacheMissTokens))
 		fmt.Println("Model                         Agent   Tokens        Cost      Entries")
 		fmt.Println("----------------------------- ------- ------------- --------- -------")
 		for _, row := range modelGroups {
@@ -253,6 +256,8 @@ func Aggregate(entries []UsageEntry, pricing Pricing) (Totals, []GroupRow, []Pro
 		total.OutputTokens += entry.OutputTokens
 		total.CacheCreationTokens += entry.CacheCreationTokens
 		total.CacheReadTokens += entry.CacheReadTokens
+		total.PromptCacheHitTokens += entry.CacheReadTokens
+		total.PromptCacheMissTokens += entry.InputTokens + entry.CacheCreationTokens
 
 		modelKey := GroupKey{Model: normalizeUnknown(entry.Model), AgentCategory: entry.AgentCategory}
 		modelBucket := byModel[modelKey]
@@ -287,6 +292,8 @@ func addTotals(bucket *Totals, entry UsageEntry, tokens int64, cost float64) {
 	bucket.OutputTokens += entry.OutputTokens
 	bucket.CacheCreationTokens += entry.CacheCreationTokens
 	bucket.CacheReadTokens += entry.CacheReadTokens
+	bucket.PromptCacheHitTokens += entry.CacheReadTokens
+	bucket.PromptCacheMissTokens += entry.InputTokens + entry.CacheCreationTokens
 }
 
 func sortGroupRows(rows []GroupRow) {
@@ -945,7 +952,7 @@ func parseGenericLine(data map[string]any, category AgentCategory) (UsageEntry, 
 		}
 	}
 	output := asInt(firstValue(usage, "output_tokens", "completion_tokens", "output")) + asInt(usage["reasoning_output_tokens"])
-	entry := UsageEntry{Timestamp: timestamp, SessionID: firstString(data, "sessionId", "session_id", "conversation_id", "thread_id"), MessageID: firstString(data, "messageId", "message_id", "id"), RequestID: firstString(data, "requestId", "request_id"), Model: model, InputTokens: input, OutputTokens: output, CacheCreationTokens: asInt(firstValue(usage, "cache_creation_input_tokens", "cacheWrite")), CacheReadTokens: cached, CostUSD: genericCost(data, usage), Project: projectFromCWD(firstString(data, "cwd", "workspace", "project", "project_path", "projectPath")), AgentCategory: category}
+	entry := UsageEntry{Timestamp: timestamp, SessionID: firstString(data, "sessionId", "session_id", "conversation_id", "thread_id"), MessageID: firstString(data, "messageId", "message_id", "id"), RequestID: firstString(data, "requestId", "request_id"), Model: model, InputTokens: input, OutputTokens: output, CacheCreationTokens: asInt(firstValue(usage, "cache_creation_input_tokens", "cacheWrite", "cache_write_input_tokens", "cacheWriteTokens")), CacheReadTokens: cached, CostUSD: genericCost(data, usage), Project: projectFromCWD(firstString(data, "cwd", "workspace", "project", "project_path", "projectPath")), AgentCategory: category}
 	return entry, entry.TotalTokens() > 0 || entry.CostUSD != nil
 }
 

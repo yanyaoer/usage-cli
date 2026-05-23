@@ -158,7 +158,7 @@ func TestAggregateGroupsByModelAndAgentCategory(t *testing.T) {
 
 	total, modelRows, projectRows := Aggregate(entries, pricing)
 
-	if total.Tokens != 10 || total.Cost != 10 {
+	if total.Tokens != 10 || total.Cost != 10 || total.PromptCacheHitTokens != 4 || total.PromptCacheMissTokens != 4 {
 		t.Fatalf("unexpected total: %#v", total)
 	}
 	if len(modelRows) != 2 {
