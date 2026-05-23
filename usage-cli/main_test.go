@@ -128,6 +128,27 @@ func TestParseGenericLineCanOverrideAgentCategory(t *testing.T) {
 	}
 }
 
+func TestParseGenericLineReadsNestedMessageUsage(t *testing.T) {
+	entry, ok := parseGenericLine(map[string]any{
+		"type":      "message",
+		"timestamp": "2026-05-23T00:00:00Z",
+		"message": map[string]any{
+			"id":    "m1",
+			"model": "openai/gpt-5.5",
+			"usage": map[string]any{
+				"input":      10,
+				"output":     3,
+				"cacheRead":  4,
+				"cacheWrite": 5,
+				"cost":       map[string]any{"total": 0.25},
+			},
+		},
+	}, AgentOMP)
+	if !ok || entry.AgentCategory != AgentOMP || entry.Model != "openai/gpt-5.5" || entry.InputTokens != 6 || entry.OutputTokens != 3 || entry.CacheReadTokens != 4 || entry.CacheCreationTokens != 5 || entry.CostUSD == nil || *entry.CostUSD != 0.25 {
+		t.Fatalf("unexpected nested usage entry=%#v ok=%v", entry, ok)
+	}
+}
+
 func TestAggregateGroupsByModelAndAgentCategory(t *testing.T) {
 	pricing := Pricing{"gpt-5": {Input: 1, Output: 2, CacheRead: 0.5}}
 	entries := []UsageEntry{

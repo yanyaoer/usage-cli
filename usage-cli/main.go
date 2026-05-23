@@ -819,6 +819,10 @@ func parseGenericLine(data map[string]any, category AgentCategory) (UsageEntry, 
 	}
 	usage := firstMap(data, "usage", "token_usage", "total_token_usage")
 	if usage == nil {
+		message := asMap(data["message"])
+		usage = firstMap(message, "usage", "token_usage", "total_token_usage")
+	}
+	if usage == nil {
 		payload := asMap(data["payload"])
 		usage = firstMap(payload, "usage", "token_usage", "total_token_usage")
 		if usage == nil {
@@ -838,17 +842,28 @@ func parseGenericLine(data map[string]any, category AgentCategory) (UsageEntry, 
 		model = "unknown"
 	}
 	category = detectAgentCategory(data, category)
-	cached := asInt(firstValue(usage, "cached_input_tokens", "cache_read_input_tokens"))
-	input := asInt(firstValue(usage, "input_tokens", "prompt_tokens"))
-	if asInt(usage["cached_input_tokens"]) > 0 {
+	cached := asInt(firstValue(usage, "cached_input_tokens", "cache_read_input_tokens", "cacheRead"))
+	input := asInt(firstValue(usage, "input_tokens", "prompt_tokens", "input"))
+	if asInt(usage["cached_input_tokens"]) > 0 || asInt(usage["cacheRead"]) > 0 {
 		input -= cached
 		if input < 0 {
 			input = 0
 		}
 	}
-	output := asInt(firstValue(usage, "output_tokens", "completion_tokens")) + asInt(usage["reasoning_output_tokens"])
-	entry := UsageEntry{Timestamp: timestamp, SessionID: firstString(data, "sessionId", "session_id", "conversation_id", "thread_id"), MessageID: firstString(data, "messageId", "message_id", "id"), RequestID: firstString(data, "requestId", "request_id"), Model: model, InputTokens: input, OutputTokens: output, CacheCreationTokens: asInt(usage["cache_creation_input_tokens"]), CacheReadTokens: cached, CostUSD: asOptionalFloat(firstValue(data, "costUSD", "cost_usd", "cost")), Project: projectFromCWD(firstString(data, "cwd", "workspace", "project")), AgentCategory: category}
+	output := asInt(firstValue(usage, "output_tokens", "completion_tokens", "output")) + asInt(usage["reasoning_output_tokens"])
+	entry := UsageEntry{Timestamp: timestamp, SessionID: firstString(data, "sessionId", "session_id", "conversation_id", "thread_id"), MessageID: firstString(data, "messageId", "message_id", "id"), RequestID: firstString(data, "requestId", "request_id"), Model: model, InputTokens: input, OutputTokens: output, CacheCreationTokens: asInt(firstValue(usage, "cache_creation_input_tokens", "cacheWrite")), CacheReadTokens: cached, CostUSD: genericCost(data, usage), Project: projectFromCWD(firstString(data, "cwd", "workspace", "project")), AgentCategory: category}
 	return entry, entry.TotalTokens() > 0 || entry.CostUSD != nil
+}
+
+func genericCost(data map[string]any, usage map[string]any) *float64 {
+	if cost := asOptionalFloat(firstValue(data, "costUSD", "cost_usd", "cost")); cost != nil {
+		return cost
+	}
+	costMap := asMap(usage["cost"])
+	if costMap != nil {
+		return asOptionalFloat(costMap["total"])
+	}
+	return nil
 }
 
 func detectAgentCategory(data map[string]any, fallback AgentCategory) AgentCategory {
