@@ -192,12 +192,13 @@ func Render(entries []UsageEntry, pricing Pricing, views []Window, now time.Time
 			fmt.Println("(no usage found)")
 		}
 		fmt.Println("")
-		fmt.Println("Project                       Agent   Tokens        Cost      Entries")
-		fmt.Println("----------------------------- ------- ------------- --------- -------")
+		fmt.Println("Project                       Agent   Cache Hit  Tokens        Cost      Entries")
+		fmt.Println("----------------------------- ------- ---------- ------------- --------- -------")
 		for _, row := range projectGroups {
-			fmt.Printf("%-29.29s %-7s %13s $%8.4f %7d\n",
+			fmt.Printf("%-29.29s %-7s %9s %13s $%8.4f %7d\n",
 				row.Key.Project,
 				row.Key.AgentCategory,
+				formatPromptCacheRate(row.Totals),
 				formatInt(row.Totals.Tokens),
 				row.Totals.Cost,
 				row.Totals.Entries,
@@ -1227,6 +1228,14 @@ func formatInt(n int64) string {
 		b.WriteString(s[i : i+3])
 	}
 	return b.String()
+}
+
+func formatPromptCacheRate(totals Totals) string {
+	denominator := totals.PromptCacheHitTokens + totals.PromptCacheMissTokens
+	if denominator <= 0 {
+		return "--"
+	}
+	return fmt.Sprintf("%.1f%%", float64(totals.PromptCacheHitTokens)*100/float64(denominator))
 }
 
 func max(a, b int) int {

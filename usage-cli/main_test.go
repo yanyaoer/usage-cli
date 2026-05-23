@@ -169,6 +169,15 @@ func TestAggregateGroupsByModelAndAgentCategory(t *testing.T) {
 	}
 }
 
+func TestFormatPromptCacheRate(t *testing.T) {
+	if got := formatPromptCacheRate(Totals{PromptCacheHitTokens: 3, PromptCacheMissTokens: 1}); got != "75.0%" {
+		t.Fatalf("unexpected cache hit rate: %s", got)
+	}
+	if got := formatPromptCacheRate(Totals{}); got != "--" {
+		t.Fatalf("unexpected empty cache hit rate: %s", got)
+	}
+}
+
 func TestResolveModelKeyNormalizesProviderAndDateSuffix(t *testing.T) {
 	pricing := Pricing{"claude-sonnet-4-6": {Input: 1}}
 	key, ok := ResolveModelKey("anthropic/claude-sonnet-4-6-20260101", pricing)
