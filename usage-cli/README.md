@@ -9,7 +9,7 @@ Go CLI for summarizing local LLM usage costs across Claude Code, Codex, Pi, and 
   - `~/.codex/sessions/**/*.jsonl`
   - `~/.pi/**/*.jsonl`
   - `~/.omp/**/*.jsonl`
-- Prints day, week, or month cost summaries in the terminal.
+- Prints day, week, month, or daily trend cost summaries in the terminal.
 - Groups spend by model and agent category:
   - `claude`
   - `codex`
@@ -26,6 +26,9 @@ go run . --view day
 go run . --view week
 go run . --view month
 go run . --view all
+go run . --view trend --range week
+go run . --view trend --range month
+go run . --view trend --from 2026-05-01 --to 2026-05-31
 ```
 
 Use another home directory for testing:

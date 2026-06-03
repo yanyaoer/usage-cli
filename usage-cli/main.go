@@ -36,6 +36,13 @@ const (
 	WindowMonth Window = "month"
 )
 
+type TrendRange string
+
+const (
+	TrendRangeWeek  TrendRange = "week"
+	TrendRangeMonth TrendRange = "month"
+)
+
 type UsageEntry struct {
 	Timestamp           time.Time
 	SessionID           string
@@ -75,6 +82,17 @@ type Totals struct {
 	CacheReadTokens       int64
 	PromptCacheHitTokens  int64
 	PromptCacheMissTokens int64
+}
+
+type TrendOptions struct {
+	Enabled bool
+	From    time.Time
+	To      time.Time
+}
+
+type DailyTrendRow struct {
+	Date   time.Time
+	Totals Totals
 }
 
 type GroupKey struct {
@@ -119,10 +137,14 @@ const liteLLMPricingURL = "https://raw.githubusercontent.com/BerriAI/litellm/mai
 const pricingCacheTTL = 7 * 24 * time.Hour
 
 func main() {
-	windowFlag := flag.String("view", "day", "view: day, week, month, all")
+	windowFlag := flag.String("view", "day", "view: day, week, month, all, trend")
+	rangeFlag := flag.String("range", "week", "trend range: week, month")
+	fromFlag := flag.String("from", "", "trend start date, YYYY-MM-DD")
+	toFlag := flag.String("to", "", "trend end date, YYYY-MM-DD")
 	homeFlag := flag.String("home", "", "home directory override for tests")
 	flag.Parse()
 
+	now := time.Now()
 	home := *homeFlag
 	if home == "" {
 		var err error
@@ -133,11 +155,20 @@ func main() {
 		}
 	}
 
-	result := LoadAllEntries(Options{Home: home, Now: time.Now()})
+	result := LoadAllEntries(Options{Home: home, Now: now})
 	pricing := LoadPricing(home)
 
 	views := []Window{WindowDay, WindowWeek, WindowMonth}
-	if *windowFlag != "all" {
+	var trend TrendOptions
+	if *windowFlag == "trend" {
+		var err error
+		trend, err = trendOptionsFor(*rangeFlag, *fromFlag, *toFlag, now)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "usage-go: %v\n", err)
+			os.Exit(2)
+		}
+		views = nil
+	} else if *windowFlag != "all" {
 		view := Window(*windowFlag)
 		if view != WindowDay && view != WindowWeek && view != WindowMonth {
 			fmt.Fprintf(os.Stderr, "usage-go: unsupported view %q\n", *windowFlag)
@@ -146,7 +177,7 @@ func main() {
 		views = []Window{view}
 	}
 
-	Render(result.Entries, pricing, views, time.Now(), result.Cache)
+	Render(result.Entries, pricing, views, now, result.Cache, trend)
 }
 
 func LoadAllEntries(opts Options) LoadResult {
@@ -167,7 +198,7 @@ func LoadAllEntries(opts Options) LoadResult {
 	return result
 }
 
-func Render(entries []UsageEntry, pricing Pricing, views []Window, now time.Time, cacheStats CacheStats) {
+func Render(entries []UsageEntry, pricing Pricing, views []Window, now time.Time, cacheStats CacheStats, trend TrendOptions) {
 	fmt.Println("usage-go cost summary")
 	fmt.Printf("Entry cache: %d files, %d hits, %d misses, %d stale, %d removed\n", cacheStats.FilesTotal, cacheStats.Hits, cacheStats.Misses, cacheStats.Stale, cacheStats.Removed)
 	for _, view := range views {
@@ -208,6 +239,140 @@ func Render(entries []UsageEntry, pricing Pricing, views []Window, now time.Time
 			fmt.Println("(no usage found)")
 		}
 	}
+	if trend.Enabled {
+		RenderDailyTrend(entries, pricing, trend)
+	}
+}
+
+func trendOptionsFor(rangeValue, fromValue, toValue string, now time.Time) (TrendOptions, error) {
+	if now.IsZero() {
+		now = time.Now()
+	}
+	loc := now.Location()
+	if loc == nil {
+		loc = time.Local
+	}
+	end := dateStart(now.In(loc))
+	switch TrendRange(rangeValue) {
+	case TrendRangeWeek:
+		// Include today plus the previous six local dates.
+		return trendOptionsFromDates(fromValue, toValue, end.AddDate(0, 0, -6), end, loc)
+	case TrendRangeMonth:
+		// Match the existing month window closely: 30 local dates including today.
+		return trendOptionsFromDates(fromValue, toValue, end.AddDate(0, 0, -29), end, loc)
+	default:
+		return TrendOptions{}, fmt.Errorf("unsupported trend range %q", rangeValue)
+	}
+}
+
+func trendOptionsFromDates(fromValue, toValue string, defaultFrom, defaultTo time.Time, loc *time.Location) (TrendOptions, error) {
+	from := defaultFrom
+	to := defaultTo
+	var err error
+	if toValue != "" {
+		to, err = parseDateInLocation(toValue, loc)
+		if err != nil {
+			return TrendOptions{}, fmt.Errorf("invalid --to date %q, expected YYYY-MM-DD", toValue)
+		}
+		if fromValue == "" {
+			days := int(defaultTo.Sub(defaultFrom).Hours() / 24)
+			from = to.AddDate(0, 0, -days)
+		}
+	}
+	if fromValue != "" {
+		from, err = parseDateInLocation(fromValue, loc)
+		if err != nil {
+			return TrendOptions{}, fmt.Errorf("invalid --from date %q, expected YYYY-MM-DD", fromValue)
+		}
+	}
+	if from.After(to) {
+		return TrendOptions{}, fmt.Errorf("--from must be on or before --to")
+	}
+	return TrendOptions{Enabled: true, From: from, To: to}, nil
+}
+
+func parseDateInLocation(value string, loc *time.Location) (time.Time, error) {
+	t, err := time.ParseInLocation("2006-01-02", value, loc)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return dateStart(t), nil
+}
+
+func AggregateDailyTrend(entries []UsageEntry, pricing Pricing, opts TrendOptions) []DailyTrendRow {
+	if opts.From.IsZero() || opts.To.IsZero() || opts.From.After(opts.To) {
+		return nil
+	}
+	loc := opts.From.Location()
+	if loc == nil {
+		loc = time.Local
+	}
+	from := dateStart(opts.From.In(loc))
+	to := dateStart(opts.To.In(loc))
+	days := int(to.Sub(from).Hours()/24) + 1
+	rows := make([]DailyTrendRow, 0, days)
+	indexByDate := make(map[string]int, days)
+	for day := from; !day.After(to); day = day.AddDate(0, 0, 1) {
+		indexByDate[day.Format("2006-01-02")] = len(rows)
+		rows = append(rows, DailyTrendRow{Date: day})
+	}
+	for _, entry := range entries {
+		day := dateStart(entry.Timestamp.In(loc))
+		idx, ok := indexByDate[day.Format("2006-01-02")]
+		if !ok {
+			continue
+		}
+		tokens := entry.TotalTokens()
+		cost := CalculateCost(entry, pricing)
+		addTotals(&rows[idx].Totals, entry, tokens, cost)
+	}
+	return rows
+}
+
+func RenderDailyTrend(entries []UsageEntry, pricing Pricing, opts TrendOptions) {
+	rows := AggregateDailyTrend(entries, pricing, opts)
+	var total Totals
+	var maxTokens int64
+	var maxCost float64
+	for _, row := range rows {
+		total.Entries += row.Totals.Entries
+		total.Tokens += row.Totals.Tokens
+		total.Cost += row.Totals.Cost
+		total.InputTokens += row.Totals.InputTokens
+		total.OutputTokens += row.Totals.OutputTokens
+		total.CacheCreationTokens += row.Totals.CacheCreationTokens
+		total.CacheReadTokens += row.Totals.CacheReadTokens
+		total.PromptCacheHitTokens += row.Totals.PromptCacheHitTokens
+		total.PromptCacheMissTokens += row.Totals.PromptCacheMissTokens
+		if row.Totals.Tokens > maxTokens {
+			maxTokens = row.Totals.Tokens
+		}
+		if row.Totals.Cost > maxCost {
+			maxCost = row.Totals.Cost
+		}
+	}
+	fmt.Printf("\nTREND (%s to %s)\n", opts.From.Format("2006-01-02"), opts.To.Format("2006-01-02"))
+	fmt.Printf("Total: %s tokens  $%.4f  %d entries\n", formatInt(total.Tokens), total.Cost, total.Entries)
+	fmt.Println("Date         Tokens        Cost      Entries  Token Trend          Cost Trend")
+	fmt.Println("----------  ------------- --------- -------  -------------------- --------------------")
+	for _, row := range rows {
+		fmt.Printf("%s  %13s $%8.4f %7d  %-20s %-20s\n",
+			row.Date.Format("2006-01-02"),
+			formatInt(row.Totals.Tokens),
+			row.Totals.Cost,
+			row.Totals.Entries,
+			formatIntBar(row.Totals.Tokens, maxTokens, 20),
+			formatFloatBar(row.Totals.Cost, maxCost, 20),
+		)
+	}
+	if len(rows) == 0 {
+		fmt.Println("(no usage found)")
+	}
+}
+
+func dateStart(t time.Time) time.Time {
+	year, month, day := t.Date()
+	return time.Date(year, month, day, 0, 0, 0, 0, t.Location())
 }
 
 func cutoffFor(view Window, now time.Time) time.Time {
@@ -1236,6 +1401,34 @@ func formatPromptCacheRate(totals Totals) string {
 		return "--"
 	}
 	return fmt.Sprintf("%.1f%%", float64(totals.PromptCacheHitTokens)*100/float64(denominator))
+}
+
+func formatIntBar(value, maxValue int64, width int) string {
+	if maxValue <= 0 {
+		return strings.Repeat(".", width)
+	}
+	return formatBar(float64(value), float64(maxValue), width)
+}
+
+func formatFloatBar(value, maxValue float64, width int) string {
+	if maxValue <= 0 {
+		return strings.Repeat(".", width)
+	}
+	return formatBar(value, maxValue, width)
+}
+
+func formatBar(value, maxValue float64, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	filled := int(math.Round(value / maxValue * float64(width)))
+	if value > 0 && filled == 0 {
+		filled = 1
+	}
+	if filled > width {
+		filled = width
+	}
+	return strings.Repeat("#", filled) + strings.Repeat(".", width-filled)
 }
 
 func max(a, b int) int {

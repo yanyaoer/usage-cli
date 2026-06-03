@@ -178,6 +178,63 @@ func TestFormatPromptCacheRate(t *testing.T) {
 	}
 }
 
+func TestTrendOptionsForDefaultWeek(t *testing.T) {
+	loc := time.FixedZone("CST", 8*60*60)
+	now := time.Date(2026, 6, 3, 15, 4, 0, 0, loc)
+
+	opts, err := trendOptionsFor("week", "", "", now)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !opts.Enabled || opts.From.Format("2006-01-02") != "2026-05-28" || opts.To.Format("2006-01-02") != "2026-06-03" {
+		t.Fatalf("unexpected week options: %#v", opts)
+	}
+}
+
+func TestTrendOptionsForDateRange(t *testing.T) {
+	loc := time.FixedZone("CST", 8*60*60)
+	now := time.Date(2026, 6, 3, 15, 4, 0, 0, loc)
+
+	opts, err := trendOptionsFor("month", "2026-05-10", "2026-05-12", now)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.From.Format("2006-01-02") != "2026-05-10" || opts.To.Format("2006-01-02") != "2026-05-12" {
+		t.Fatalf("unexpected date range options: %#v", opts)
+	}
+}
+
+func TestAggregateDailyTrendFillsDatesAndUsesLocalDate(t *testing.T) {
+	loc := time.FixedZone("CST", 8*60*60)
+	opts := TrendOptions{
+		Enabled: true,
+		From:    time.Date(2026, 5, 1, 0, 0, 0, 0, loc),
+		To:      time.Date(2026, 5, 3, 0, 0, 0, 0, loc),
+	}
+	pricing := Pricing{"gpt-5": {Input: 1, Output: 2}}
+	entries := []UsageEntry{
+		{Timestamp: time.Date(2026, 5, 1, 16, 30, 0, 0, time.UTC), Model: "gpt-5", AgentCategory: AgentCodex, InputTokens: 3, OutputTokens: 1},
+		{Timestamp: time.Date(2026, 5, 3, 1, 0, 0, 0, time.UTC), Model: "gpt-5", AgentCategory: AgentCodex, InputTokens: 2},
+	}
+
+	rows := AggregateDailyTrend(entries, pricing, opts)
+
+	if len(rows) != 3 {
+		t.Fatalf("expected 3 daily rows, got %#v", rows)
+	}
+	if rows[0].Date.Format("2006-01-02") != "2026-05-01" || rows[0].Totals.Tokens != 0 || rows[0].Totals.Entries != 0 {
+		t.Fatalf("expected empty first day, got %#v", rows[0])
+	}
+	if rows[1].Date.Format("2006-01-02") != "2026-05-02" || rows[1].Totals.Tokens != 4 || rows[1].Totals.Cost != 5 {
+		t.Fatalf("expected UTC evening entry on local second day, got %#v", rows[1])
+	}
+	if rows[2].Date.Format("2006-01-02") != "2026-05-03" || rows[2].Totals.Tokens != 2 || rows[2].Totals.Cost != 2 {
+		t.Fatalf("expected third day totals, got %#v", rows[2])
+	}
+}
+
 func TestResolveModelKeyNormalizesProviderAndDateSuffix(t *testing.T) {
 	pricing := Pricing{"claude-sonnet-4-6": {Input: 1}}
 	key, ok := ResolveModelKey("anthropic/claude-sonnet-4-6-20260101", pricing)
